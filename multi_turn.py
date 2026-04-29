@@ -9,6 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from composer import (
     _first_offer,
+    _first_fact_with,
     _json_compact,
     extract_key_facts,
     get_llm_client,
@@ -61,6 +62,7 @@ HINDI_WORD_RE = re.compile(
     r"mere|abhi|baad|kal|theek|thik|shukriya|dhanyavaad|kripya)\b",
     re.IGNORECASE,
 )
+INDIC_SCRIPT_RE = re.compile(r"[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF]")
 
 
 def _utc_now() -> str:
@@ -69,7 +71,7 @@ def _utc_now() -> str:
 
 def detect_reply_language(message: str) -> str:
     text = message or ""
-    if re.search(r"[\u0900-\u097F]", text):
+    if INDIC_SCRIPT_RE.search(text):
         return "hi"
     if HINDI_WORD_RE.search(text):
         return "hi-en"
@@ -266,15 +268,6 @@ def _hinglish_suffix(language: str, body: str) -> str:
     return body
 
 
-def _matching_fact(patterns: list[str], facts: list[str]) -> str | None:
-    lowered_patterns = [pattern.lower() for pattern in patterns]
-    for fact in facts:
-        fact_l = fact.lower()
-        if any(pattern in fact_l for pattern in lowered_patterns):
-            return fact
-    return None
-
-
 def _answer_from_context(
     message: str,
     merchant: dict[str, Any],
@@ -286,12 +279,12 @@ def _answer_from_context(
     fact = facts[0] if facts else f"{offer} is active"
     text = message.lower()
     if "price" in text or "cost" in text or "kitna" in text or "₹" in text:
-        price_fact = _matching_fact(["offer", "price", "slot", "service", "₹"], facts)
+        price_fact = _first_fact_with(["offer", "price", "slot", "service", "₹"], facts)
         detail = price_fact or offer
         return f"{detail}. I can turn this into a customer reply template if you say YES."
     if "why" in text or "kyu" in text or "kya" in text:
         why_fact = (
-            _matching_fact(
+            _first_fact_with(
                 ["trigger", "festival", "ctr", "gap", "calls", "views", "review", "competitor", "lapsed"],
                 facts,
             )
@@ -299,6 +292,11 @@ def _answer_from_context(
         )
         return f"Because this trigger is live now: {why_fact}. Want me to handle the draft?"
     return f"Based on your context: {fact}. I can draft the next message from this - reply YES."
+
+
+def _clean_llm_text(value: Any, limit: int = 320) -> str:
+    text = str(value or "").replace("\n...<truncated>", "...").replace("...<truncated>", "...")
+    return _shorten(text.strip(), limit)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
@@ -440,13 +438,16 @@ def compose_reply(
             result = _reply_with_llm(
                 intent, message, language, history, merchant, trigger, category, customer
             )
-            body = _shorten(str(result.get("body") or ""))
+            body = _clean_llm_text(result.get("body"))
             if body:
-                cta = _shorten(str(result.get("cta") or "Reply YES"), 80)
+                cta = _clean_llm_text(result.get("cta") or "Reply YES", 80)
                 return {
                     "body": body,
                     "cta": cta,
-                    "rationale": str(result.get("rationale") or "LLM reply from context."),
+                    "rationale": _clean_llm_text(
+                        result.get("rationale") or "LLM reply from context.",
+                        500,
+                    ),
                 }
         except Exception:
             pass
@@ -512,6 +513,7 @@ def handle_reply(
         conv = fresh_conv
         history = list(conv.get("history") or [])
     else:
+        print(f"[vera] warning: conversation {conversation_id} missing after append_history")
         history.append(incoming)
 
     if intent == "auto_reply":

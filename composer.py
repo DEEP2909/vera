@@ -1118,11 +1118,12 @@ def validate_and_fix(
 
 
 def _first_fact_with(patterns: list[str], facts: list[str]) -> str | None:
+    lowered_patterns = [pattern.lower() for pattern in patterns]
     for fact in facts:
         fact_l = fact.lower()
-        if any(pattern in fact_l for pattern in patterns):
+        if any(pattern in fact_l for pattern in lowered_patterns):
             return fact
-    return facts[0] if facts else None
+    return None
 
 
 def _body_with_limit(text: str, limit: int = 320) -> str:
@@ -1245,9 +1246,10 @@ def compose(
     trigger = trigger or {}
     route = route_for_trigger(trigger)
     key_facts = extract_key_facts(category, merchant, trigger, customer)
+    canonical_key = _suppression_key(merchant, trigger, customer, route)
     system_prompt, user_prompt = build_prompts(route, category, merchant, trigger, customer, key_facts)
     fallback_result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
-    fallback_result["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
+    fallback_result["suppression_key"] = canonical_key
     safe_fallback_result = fallback_result if not _validation_errors(fallback_result, category) else None
 
     try:
@@ -1262,11 +1264,11 @@ def compose(
     result["_key_facts"] = key_facts
     result["_merchant_name"] = _merchant_name(merchant)
     if not result.get("suppression_key"):
-        result["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
+        result["suppression_key"] = canonical_key
 
     validated = validate_and_fix(result, category, trigger, fallback_result=safe_fallback_result)
     if not validated.get("suppression_key"):
-        validated["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
+        validated["suppression_key"] = canonical_key
     validated["route"] = route
     validated["key_facts"] = key_facts
     return validated

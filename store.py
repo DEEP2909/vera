@@ -85,6 +85,25 @@ class ContextStore:
     def _utc_now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    @staticmethod
+    def _suppression_ttl_seconds() -> int:
+        try:
+            return int(os.getenv("SUPPRESSION_TTL_SECONDS", "86400"))
+        except ValueError:
+            return 86400
+
+    @staticmethod
+    def _suppression_is_expired(sent_at_value: Any, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            return False
+        try:
+            sent_at = datetime.fromisoformat(str(sent_at_value).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - sent_at).total_seconds() > ttl_seconds
+
     def upsert(
         self, scope: str, context_id: str, version: int, payload: dict[str, Any]
     ) -> tuple[bool, int]:
@@ -160,22 +179,46 @@ class ContextStore:
     def mark_suppressed(self, key: str) -> None:
         if not key:
             return
+        self.reserve_suppression(key)
+
+    def reserve_suppression(self, key: str) -> bool:
+        """Atomically reserve a suppression key.
+
+        Returns True when this call inserted the key, False when a non-expired
+        key was already present. Expired keys are cleared before reservation.
+        """
+
+        if not key:
+            return False
+        ttl_seconds = self._suppression_ttl_seconds()
         with self._lock, self._conn:
-            self._conn.execute(
+            row = self._conn.execute(
+                "SELECT sent_at FROM suppressions WHERE key = ?", (key,)
+            ).fetchone()
+            if row is not None:
+                if self._suppression_is_expired(row["sent_at"], ttl_seconds):
+                    self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
+                else:
+                    return False
+            cursor = self._conn.execute(
                 """
                 INSERT OR IGNORE INTO suppressions (key, sent_at)
                 VALUES (?, ?)
                 """,
                 (key, self._utc_now()),
             )
+            return cursor.rowcount > 0
+
+    def clear_suppression(self, key: str) -> None:
+        if not key:
+            return
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
 
     def is_suppressed(self, key: str) -> bool:
         if not key:
             return False
-        try:
-            ttl_seconds = int(os.getenv("SUPPRESSION_TTL_SECONDS", "86400"))
-        except ValueError:
-            ttl_seconds = 86400
+        ttl_seconds = self._suppression_ttl_seconds()
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT sent_at FROM suppressions WHERE key = ?", (key,)
@@ -184,13 +227,7 @@ class ContextStore:
                 return False
             if ttl_seconds <= 0:
                 return True
-            try:
-                sent_at = datetime.fromisoformat(str(row["sent_at"]).replace("Z", "+00:00"))
-            except ValueError:
-                return True
-            if sent_at.tzinfo is None:
-                sent_at = sent_at.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - sent_at).total_seconds() > ttl_seconds:
+            if self._suppression_is_expired(row["sent_at"], ttl_seconds):
                 self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
                 return False
             return True

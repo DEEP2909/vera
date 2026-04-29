@@ -165,7 +165,8 @@ def preload_expanded_dataset(store: ContextStore, root: Path = Path("expanded"))
     for path in root.rglob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            print(f"[vera] skipping {path}: {exc}")
             continue
         for record in _iter_dataset_records(data, path):
             scope, context_id, version, payload = _scope_id_for_record(record, path)
@@ -257,7 +258,7 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
     for context_id, payload, _ in store.list_contexts("merchant"):
         if _merchant_matches_category(payload, category_id):
             merchants.append((context_id, payload))
-        if len(merchants) >= 1:
+        if len(merchants) >= 5:
             break
     return merchants
 
@@ -350,7 +351,6 @@ def _build_tick_action(
             "route": route,
         },
     )
-    STORE.mark_suppressed(suppression_key)
     return {
         "conversation_id": conversation_id,
         "merchant_id": merchant_id,
@@ -384,9 +384,8 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             if not merchant:
                 continue
             pre_key = _pre_suppression_key(trigger, merchant_id, customer_id, trigger_id)
-            if STORE.is_suppressed(pre_key):
+            if not STORE.reserve_suppression(pre_key):
                 continue
-            STORE.mark_suppressed(pre_key)
             category = _resolve_category(STORE, merchant, trigger)
             candidates.append(
                 {
@@ -429,11 +428,13 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             break
         composed = composed_by_index.get(index)
         if not composed:
+            STORE.clear_suppression(candidate["pre_key"])
             continue
         suppression_key = composed.get("suppression_key")
         if not suppression_key:
+            STORE.clear_suppression(candidate["pre_key"])
             continue
-        if STORE.is_suppressed(suppression_key):
+        if suppression_key != candidate["pre_key"] and not STORE.reserve_suppression(suppression_key):
             continue
         actions.append(_build_tick_action(request, candidate, composed))
     return actions

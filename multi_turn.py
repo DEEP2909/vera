@@ -266,6 +266,15 @@ def _hinglish_suffix(language: str, body: str) -> str:
     return body
 
 
+def _matching_fact(patterns: list[str], facts: list[str]) -> str | None:
+    lowered_patterns = [pattern.lower() for pattern in patterns]
+    for fact in facts:
+        fact_l = fact.lower()
+        if any(pattern in fact_l for pattern in lowered_patterns):
+            return fact
+    return None
+
+
 def _answer_from_context(
     message: str,
     merchant: dict[str, Any],
@@ -277,9 +286,18 @@ def _answer_from_context(
     fact = facts[0] if facts else f"{offer} is active"
     text = message.lower()
     if "price" in text or "cost" in text or "kitna" in text or "₹" in text:
-        return f"{offer}. I can turn this into a customer reply template if you say YES."
+        price_fact = _matching_fact(["offer", "price", "slot", "service", "₹"], facts)
+        detail = price_fact or offer
+        return f"{detail}. I can turn this into a customer reply template if you say YES."
     if "why" in text or "kyu" in text or "kya" in text:
-        return f"Because this trigger is live now: {fact}. Want me to handle the draft?"
+        why_fact = (
+            _matching_fact(
+                ["trigger", "festival", "ctr", "gap", "calls", "views", "review", "competitor", "lapsed"],
+                facts,
+            )
+            or fact
+        )
+        return f"Because this trigger is live now: {why_fact}. Want me to handle the draft?"
     return f"Based on your context: {fact}. I can draft the next message from this - reply YES."
 
 
@@ -340,7 +358,7 @@ MERCHANT'S LATEST MESSAGE:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        max_tokens=384,
+        max_tokens=512,
     )
     return json.loads(response.choices[0].message.content or "{}")
 
@@ -398,6 +416,7 @@ def _fallback_reply(
         cta = "Say GO"
         rationale = "Neutral reply received; sent a smaller next-best nudge."
     else:
+        # Decline and soft-decline are handled before compose_reply; this is a defensive fallback.
         body = f"Noted, {name}. I won't push this now."
         cta = ""
         rationale = "Fallback for non-send intent."
@@ -488,7 +507,12 @@ def handle_reply(
         customer_id=effective_customer_id,
         trigger_id=(conv or {}).get("trigger_id"),
     )
-    history.append(incoming)
+    fresh_conv = store.get_conversation(conversation_id)
+    if fresh_conv is not None:
+        conv = fresh_conv
+        history = list(conv.get("history") or [])
+    else:
+        history.append(incoming)
 
     if intent == "auto_reply":
         if turn_number <= 2:

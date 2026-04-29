@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from typing import Any
 
 from openai import AzureOpenAI, OpenAI
@@ -524,7 +525,7 @@ def _first_offer(
         for offer in _as_list(offers):
             if isinstance(offer, dict):
                 status = str(offer.get("status") or offer.get("state") or "").lower()
-                if status and "inactive" in status:
+                if status and any(s in status for s in ("inactive", "expired", "paused")):
                     continue
                 name = offer.get("name") or offer.get("title") or offer.get("service")
                 price = _fmt_money(
@@ -1226,7 +1227,7 @@ def _suppression_key(
         or _deep_get(customer, "customer_id", "id", "profile.customer_id")
         or "merchant"
     )
-    trigger_id = trigger.get("trigger_id") or trigger.get("id") or trigger.get("kind") or route
+    trigger_id = trigger.get("trigger_id") or trigger.get("id") or f"anon-{uuid.uuid4().hex[:8]}"
     date_key = trigger.get("suppression_date") or trigger.get("date") or trigger.get("scheduled_for") or ""
     raw = f"{merchant_id}:{customer_id}:{trigger_id}:{route}:{date_key}"
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
@@ -1246,6 +1247,7 @@ def compose(
     key_facts = extract_key_facts(category, merchant, trigger, customer)
     system_prompt, user_prompt = build_prompts(route, category, merchant, trigger, customer, key_facts)
     fallback_result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
+    fallback_result["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
     safe_fallback_result = fallback_result if not _validation_errors(fallback_result, category) else None
 
     try:

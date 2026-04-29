@@ -282,8 +282,7 @@ async def internal_exception_handler(_, exc: Exception):
     )
 
 
-@app.post("/v1/context")
-def upsert_context(request: ContextRequest):
+def _upsert_sync(request: ContextRequest):
     accepted, current_version = STORE.upsert(
         request.scope, request.context_id, request.version, request.payload
     )
@@ -301,6 +300,12 @@ def upsert_context(request: ContextRequest):
         "ack_id": ack_id(request.scope, request.context_id, request.version),
         "stored_at": utc_now(),
     }
+
+
+@app.post("/v1/context")
+async def upsert_context(request: ContextRequest):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _upsert_sync, request)
 
 
 def _build_tick_action(
@@ -345,7 +350,6 @@ def _build_tick_action(
             "route": route,
         },
     )
-    STORE.mark_suppressed(candidate["pre_key"])
     STORE.mark_suppressed(suppression_key)
     return {
         "conversation_id": conversation_id,
@@ -382,6 +386,7 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             pre_key = _pre_suppression_key(trigger, merchant_id, customer_id, trigger_id)
             if STORE.is_suppressed(pre_key):
                 continue
+            STORE.mark_suppressed(pre_key)
             category = _resolve_category(STORE, merchant, trigger)
             candidates.append(
                 {
@@ -399,6 +404,7 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
         return []
 
     actions: list[dict[str, Any]] = []
+    composed_by_index: dict[int, dict[str, Any]] = {}
     max_workers = min(5, len(candidates))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -408,23 +414,28 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
                 candidate["merchant"],
                 candidate["trigger"],
                 candidate["customer"],
-            ): candidate
-            for candidate in candidates
+            ): index
+            for index, candidate in enumerate(candidates)
         }
         for future in as_completed(futures):
-            if len(actions) >= 5:
-                break
-            candidate = futures[future]
+            index = futures[future]
             try:
-                composed = future.result()
+                composed_by_index[index] = future.result()
             except Exception:
                 continue
-            suppression_key = composed.get("suppression_key")
-            if not suppression_key:
-                continue
-            if STORE.is_suppressed(candidate["pre_key"]) or STORE.is_suppressed(suppression_key):
-                continue
-            actions.append(_build_tick_action(request, candidate, composed))
+
+    for index, candidate in enumerate(candidates):
+        if len(actions) >= 5:
+            break
+        composed = composed_by_index.get(index)
+        if not composed:
+            continue
+        suppression_key = composed.get("suppression_key")
+        if not suppression_key:
+            continue
+        if STORE.is_suppressed(suppression_key):
+            continue
+        actions.append(_build_tick_action(request, candidate, composed))
     return actions
 
 

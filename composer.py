@@ -14,7 +14,7 @@ from utils import first_fact_with as _first_fact_with
 
 
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
-DEFAULT_OPENAI_TIMEOUT_SECONDS = 8.0
+DEFAULT_OPENAI_TIMEOUT_SECONDS = 25.0
 COMPOSE_MODEL = (
     os.getenv("AZURE_OPENAI_COMPOSE_DEPLOYMENT")
     or os.getenv("AZURE_OPENAI_DEPLOYMENT")
@@ -1310,6 +1310,13 @@ Hard constraints:
 - Do not use taboo vocabulary from the category voice.
 - If language includes "hi", prefer one natural Hindi/Hinglish phrase.
 
+Scoring guidance (all 5 dimensions matter equally):
+1. Specificity: Quote exact merchant name, numbers, percentages, dates from KEY FACTS — never paraphrase data.
+2. Category Fit: Use category-appropriate vocabulary and tone (clinical for dentists/pharmacies, vibrant/personal for salons, data-driven for restaurants/gyms).
+3. Merchant Fit: Explicitly reference THIS merchant's business name, locality, or active offer in the body — the message must feel written for them, not a template.
+4. Trigger Relevance: State clearly WHY you are messaging NOW using the trigger signal; the reason must be obvious.
+5. Engagement: End with a specific, time-sensitive CTA that creates urgency or curiosity; avoid generic "Reply YES" when a richer CTA fits.
+
 Category voice:
 {_voice_summary(category)}
 """.strip()
@@ -1338,8 +1345,8 @@ Compose the WhatsApp message now. Keep it specific to the merchant and trigger.
     return system_prompt, user_prompt
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
-def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int = 512) -> dict[str, Any]:
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
+def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int = 700) -> dict[str, Any]:
     client = get_llm_client()
     response = client.chat.completions.create(
         model=model,

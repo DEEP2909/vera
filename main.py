@@ -179,6 +179,49 @@ def preload_expanded_dataset(store: ContextStore, root: Path = Path("expanded"))
     return loaded
 
 
+def preload_seed_dataset(
+    store: ContextStore, root: Path = Path("magicpin-ai-challenge/dataset")
+) -> int:
+    if not root.exists() or not root.is_dir():
+        return 0
+    loaded = 0
+
+    for path in (root / "categories").glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.warning("[vera] skipping %s: %s", path, exc)
+            continue
+        context_id = str(payload.get("slug") or path.stem)
+        accepted, _ = store.upsert("category", context_id, 0, payload)
+        if accepted:
+            loaded += 1
+
+    seed_specs = [
+        ("merchant", root / "merchants_seed.json", "merchants", "merchant_id"),
+        ("customer", root / "customers_seed.json", "customers", "customer_id"),
+        ("trigger", root / "triggers_seed.json", "triggers", "id"),
+    ]
+    for scope, path, container, id_key in seed_specs:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.warning("[vera] skipping %s: %s", path, exc)
+            continue
+        for payload in data.get(container, []):
+            if not isinstance(payload, dict):
+                continue
+            context_id = str(payload.get(id_key) or "")
+            if not context_id:
+                continue
+            accepted, _ = store.upsert(scope, context_id, 0, payload)
+            if accepted:
+                loaded += 1
+    return loaded
+
+
 def _normalize_category_id(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
 
@@ -280,6 +323,7 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, preload_expanded_dataset, STORE)
+    await loop.run_in_executor(None, preload_seed_dataset, STORE)
     yield
     STORE.close()
 

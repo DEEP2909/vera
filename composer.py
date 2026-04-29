@@ -482,6 +482,8 @@ def _fmt_money(value: Any) -> str | None:
     text = str(value).strip()
     if not text:
         return None
+    if "%" in text:
+        return None
     if "₹" in text or text.lower().startswith("rs"):
         return text.replace("Rs.", "₹").replace("Rs ", "₹")
     match = re.search(r"\d+(?:\.\d+)?", text)
@@ -527,7 +529,10 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
                 value = parts[2].title()
     if not value:
         return "there"
-    return str(value).split()[0]
+    parts = str(value).split()
+    if len(parts) >= 2 and parts[0].rstrip(".").lower() in {"mr", "mrs", "ms", "dr"}:
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]
 
 
 def _business_name(merchant: dict[str, Any] | None) -> str:
@@ -934,6 +939,35 @@ def extract_key_facts(
     if intent_topic:
         facts.append(f"Planning intent: {intent_topic}")
 
+    ask_template = _deep_get(trigger, "payload.ask_template")
+    if ask_template:
+        facts.append(f"Ask due: {str(ask_template).replace('_', ' ')}")
+
+    merchant_last_message = _deep_get(trigger, "payload.merchant_last_message")
+    if merchant_last_message:
+        facts.append(f"Merchant asked: {merchant_last_message}")
+
+    days_remaining_sub = _deep_get(trigger, "payload.days_remaining")
+    renewal_amount = _fmt_money(_deep_get(trigger, "payload.renewal_amount"))
+    plan = _deep_get(trigger, "payload.plan")
+    if days_remaining_sub is not None and plan:
+        facts.append(
+            f"Renewal due: {plan} plan in {days_remaining_sub} days"
+            + (f"; amount {renewal_amount}" if renewal_amount else "")
+        )
+
+    days_since_expiry = _deep_get(trigger, "payload.days_since_expiry")
+    lapsed_added = _deep_get(trigger, "payload.lapsed_customers_added_since_expiry")
+    if days_since_expiry:
+        facts.append(
+            f"Winback signal: expired {days_since_expiry} days ago"
+            + (f"; {lapsed_added} lapsed customers added" if lapsed_added else "")
+        )
+
+    days_since_message = _deep_get(trigger, "payload.days_since_last_merchant_message")
+    if days_since_message:
+        facts.append(f"Dormant signal: no merchant reply for {days_since_message} days")
+
     if _deep_get(trigger, "payload.verified") is False:
         uplift = _fmt_percent(_deep_get(trigger, "payload.estimated_uplift_pct"))
         facts.append(f"Profile signal: GBP unverified" + (f"; estimated uplift {uplift}" if uplift else ""))
@@ -947,6 +981,29 @@ def extract_key_facts(
     if molecule:
         batch_text = ", ".join(str(batch) for batch in _as_list(batches)[:2]) if batches else ""
         facts.append(f"Supply alert: {molecule}" + (f" batches {batch_text}" if batch_text else ""))
+
+    molecule_list = _deep_get(trigger, "payload.molecule_list")
+    stock_runs_out = _deep_get(trigger, "payload.stock_runs_out_iso")
+    if molecule_list:
+        meds = ", ".join(str(item) for item in _as_list(molecule_list)[:3])
+        facts.append(
+            f"Refill due: {meds}"
+            + (f"; stock runs out {stock_runs_out}" if stock_runs_out else "")
+        )
+
+    wedding_date = _deep_get(trigger, "payload.wedding_date")
+    days_to_wedding = _deep_get(trigger, "payload.days_to_wedding")
+    trial_completed = _deep_get(trigger, "payload.trial_completed")
+    if wedding_date:
+        facts.append(
+            f"Wedding follow-up: wedding {wedding_date}"
+            + (f"; {days_to_wedding} days left" if days_to_wedding else "")
+            + (f"; trial completed {trial_completed}" if trial_completed else "")
+        )
+
+    trial_date = _deep_get(trigger, "payload.trial_date")
+    if trial_date:
+        facts.append(f"Trial follow-up: trial on {trial_date}")
 
     last_post_days = _deep_get(
         trigger,
@@ -1261,10 +1318,10 @@ def _fallback_message(
         "perf_spike": ["performance spike", "view trends", "ctr gap"],
         "milestone": ["milestone", "reviews", "rating"],
         "festival": ["festival", "event", "seasonal"],
-        "reactivation": ["profile signal", "planning intent", "seasonal trends", "lapsed", "content signal"],
+        "reactivation": ["renewal due", "winback signal", "dormant signal", "profile signal", "planning intent", "seasonal trends", "lapsed", "content signal"],
         "review_insight": ["review theme"],
         "competitive": ["competitor signal", "rating", "active offers"],
-        "curious_ask": ["planning intent", "seasonal trends", "active offers", "view trends"],
+        "curious_ask": ["planning intent", "merchant asked", "ask due", "seasonal trends", "active offers", "view trends"],
         "content_nudge": ["content signal", "profile signal", "seasonal trends", "event", "active offers"],
     }
     fact = _first_fact_with(route_patterns.get(route, []), facts)
@@ -1276,14 +1333,37 @@ def _fallback_message(
         body = f"{name}, {fact}. {cohort + '. ' if cohort else ''}Want me to pull it and draft a customer-share WhatsApp?"
         cta = "Reply YES"
     elif route == "recall":
-        timing = _first_fact_with(["customer timing", "service due", "last service"], facts) or "follow-up is due"
+        refill = _first_fact_with(["refill due"], facts)
+        wedding = _first_fact_with(["wedding follow-up"], facts)
+        trial = _first_fact_with(["trial follow-up"], facts)
+        timing = _first_fact_with(
+            ["refill due", "wedding follow-up", "trial follow-up", "customer timing", "service due", "last service"],
+            facts,
+        ) or "follow-up is due"
         slot_a, slot_b = _first_slot(trigger, merchant)
-        slot_a = slot_a or "today 5pm"
-        slot_b = slot_b or "tomorrow 11am"
-        body = (
-            f"Hi {customer_first}, {business} here. {timing}. {offer}. "
-            f"{slot_a} or {slot_b} available. Reply 1 for first, 2 for second."
-        )
+        if refill:
+            body = (
+                f"Hi {customer_first}, {business} here. {refill}. "
+                "Reply 1 for delivery to saved address, 2 for pickup."
+            )
+        elif wedding:
+            body = (
+                f"Hi {customer_first}, {business} here. {wedding}. "
+                f"{offer}. Reply 1 for skin-prep plan, 2 for package call."
+            )
+        elif trial:
+            slot_a = slot_a or "next session"
+            body = (
+                f"Hi {customer_first}, {business} here. {trial}. "
+                f"{slot_a} is open. Reply 1 to book, 2 for another slot."
+            )
+        else:
+            slot_a = slot_a or "today 5pm"
+            slot_b = slot_b or "tomorrow 11am"
+            body = (
+                f"Hi {customer_first}, {business} here. {timing}. {offer}. "
+                f"{slot_a} or {slot_b} available. Reply 1 for first, 2 for second."
+            )
         cta = "Reply 1 or 2"
     elif route == "perf_dip":
         body = f"{name}, {fact} for {business} - you may be missing leads. I can fix one post around {offer} now. Reply YES."
@@ -1299,7 +1379,7 @@ def _fallback_message(
         body = f"{name}, {festival_fact}. {offer} fits {business}'s audience. I can draft a campaign now. Reply YES or STOP."
         cta = "YES or STOP"
     elif route == "reactivation":
-        body = f"{name}, {fact} for {business}. I can turn this into a useful Google post in 5 min."
+        body = f"{name}, {fact} for {business}. I can turn this into one useful post or reply in 5 min."
         cta = "Say GO"
     elif route == "review_insight":
         review_fact = _first_fact_with(["review"], facts) or fact
@@ -1310,7 +1390,14 @@ def _fallback_message(
         body = f"{name}, {comp_fact}. {business}'s {offer} can stand out here. Want to see how you compare?"
         cta = "Reply COMPARE"
     elif route == "curious_ask":
-        body = f"{name}, quick ask for {business}: what service got most enquiries this week? I'll turn it into a Google post + WhatsApp reply."
+        planning = _first_fact_with(["planning intent"], facts)
+        if planning:
+            topic = planning.split(":", 1)[-1].strip().replace("_", " ")
+            body = f"{name}, you were planning {topic} for {business}. I'll draft the offer, Google post, and WhatsApp reply. Say GO."
+        elif _first_fact_with(["ask due"], facts):
+            body = f"{name}, quick ask for {business}: which service is most in demand this week? I'll turn your answer into a Google post + WhatsApp reply."
+        else:
+            body = f"{name}, quick ask for {business}: what service got most enquiries this week? I'll turn it into a Google post + WhatsApp reply."
         cta = "Reply with one service"
     elif route == "content_nudge":
         body = f"{name}, {fact} for {business}. I'll write a fresh post around {offer} - just say GO."

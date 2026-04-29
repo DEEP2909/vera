@@ -196,7 +196,10 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
                 value = parts[2].title()
     if not value:
         return "there"
-    return str(value).split()[0]
+    parts = str(value).split()
+    if len(parts) >= 2 and parts[0].rstrip(".").lower() in {"mr", "mrs", "ms", "dr"}:
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]
 
 
 def _business_name(merchant: dict[str, Any] | None) -> str:

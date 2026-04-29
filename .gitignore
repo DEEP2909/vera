@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 venv/
 vera_context.db
+*.db
 *.sqlite
 *.sqlite3

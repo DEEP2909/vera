@@ -255,7 +255,7 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
     for context_id, payload, _ in store.list_contexts("merchant"):
         if _merchant_matches_category(payload, category_id):
             merchants.append((context_id, payload))
-        if len(merchants) >= 5:
+        if len(merchants) >= 1:
             break
     return merchants
 
@@ -272,9 +272,10 @@ app = FastAPI(title="Vera Merchant AI Assistant", version="1.0.0", lifespan=life
 
 @app.exception_handler(Exception)
 async def internal_exception_handler(_, exc: Exception):
+    detail = str(exc) if os.getenv("VERA_DEBUG_ERRORS") == "1" else "internal_server_error"
     return JSONResponse(
         status_code=500,
-        content={"error": "internal", "detail": str(exc)},
+        content={"error": "internal", "detail": detail},
     )
 
 

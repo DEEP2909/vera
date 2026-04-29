@@ -11,8 +11,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from utils import deep_get as _deep_get
 
 
-DEFAULT_AZURE_ENDPOINT = "https://evidentis.openai.azure.com/"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
+DEFAULT_OPENAI_TIMEOUT_SECONDS = 8.0
 COMPOSE_MODEL = (
     os.getenv("AZURE_OPENAI_COMPOSE_DEPLOYMENT")
     or os.getenv("AZURE_OPENAI_DEPLOYMENT")
@@ -25,7 +25,10 @@ _llm_lock = threading.Lock()
 
 
 def has_llm_credentials() -> bool:
-    return bool(os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    return bool(
+        (os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_ENDPOINT"))
+        or os.getenv("OPENAI_API_KEY")
+    )
 
 
 def get_llm_client() -> AzureOpenAI | OpenAI:
@@ -36,41 +39,81 @@ def get_llm_client() -> AzureOpenAI | OpenAI:
         if _llm_client is not None:
             return _llm_client
         azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        try:
+            timeout = float(os.getenv("OPENAI_TIMEOUT_SECONDS", DEFAULT_OPENAI_TIMEOUT_SECONDS))
+        except ValueError:
+            timeout = DEFAULT_OPENAI_TIMEOUT_SECONDS
         if azure_api_key:
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            if not azure_endpoint:
+                raise RuntimeError("AZURE_OPENAI_ENDPOINT is required when AZURE_OPENAI_API_KEY is set")
             _llm_client = AzureOpenAI(
                 api_key=azure_api_key,
                 api_version=os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION),
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT),
+                azure_endpoint=azure_endpoint,
+                timeout=timeout,
             )
         else:
-            _llm_client = OpenAI()
+            _llm_client = OpenAI(timeout=timeout)
     return _llm_client
 
 
 TRIGGER_ROUTE_MAP = {
     "research_digest": "research",
+    "category_research": "research",
     "category_research_digest_release": "research",
+    "regulation_change": "research",
+    "cde_opportunity": "research",
+    "supply_alert": "research",
     "recall_due": "recall",
     "customer_lapsed_soft": "recall",
+    "customer_lapsed_hard": "recall",
+    "appointment_tomorrow": "recall",
+    "chronic_refill_due": "recall",
+    "trial_followup": "recall",
+    "wedding_package_followup": "recall",
     "perf_dip": "perf_dip",
+    "seasonal_perf_dip": "perf_dip",
     "perf_spike": "perf_spike",
     "milestone_reached": "milestone",
     "festival_upcoming": "festival",
+    "ipl_match_today": "festival",
     "dormant_with_vera": "reactivation",
+    "winback_eligible": "reactivation",
+    "renewal_due": "reactivation",
     "review_theme_emerged": "review_insight",
     "competitor_opened": "competitive",
     "curious_ask_due": "curious_ask",
     "scheduled_recurring": "curious_ask",
+    "active_planning_intent": "curious_ask",
     "stale_posts": "content_nudge",
     "ctr_below_peer": "content_nudge",
+    "category_seasonal": "content_nudge",
+    "gbp_unverified": "content_nudge",
 }
+
+
+ROUTE_KEYWORD_FALLBACKS = (
+    ("perf_spike", ("spike", "surge", "growth")),
+    ("perf_dip", ("perf_dip", "dip", "drop", "below_peer", "decline")),
+    ("recall", ("recall", "lapsed", "refill", "appointment", "trial", "followup", "follow_up", "wedding")),
+    ("research", ("research", "digest", "regulation", "compliance", "cde", "webinar", "supply", "alert")),
+    ("festival", ("festival", "diwali", "holi", "ipl", "match", "event")),
+    ("milestone", ("milestone",)),
+    ("review_insight", ("review", "theme")),
+    ("competitive", ("competitor", "competitive")),
+    ("curious_ask", ("curious", "ask", "planning", "intent")),
+    ("reactivation", ("dormant", "winback", "renewal", "quiet")),
+    ("content_nudge", ("content", "post", "gbp", "unverified", "seasonal", "ctr")),
+)
 
 
 ROUTE_INSTRUCTIONS = {
     "research": (
         "Lead with the finding. Include: trial size + % stat + source citation. "
-        "Connect to THIS merchant's specific patient/customer cohort. Offer to "
-        "draft patient-ed content they can share. Use clinical/peer tone. No hype."
+        "Connect to THIS merchant's specific customer cohort. Offer to draft "
+        "shareable customer education content. Match the category voice; for "
+        "clinical categories use peer/clinical tone. No hype."
     ),
     "recall": (
         "This is a CUSTOMER-facing message (send_as=merchant_on_behalf). Include: "
@@ -372,7 +415,13 @@ def route_for_trigger(trigger: dict[str, Any]) -> str:
         or trigger.get("trigger_kind")
         or ""
     )
-    return TRIGGER_ROUTE_MAP.get(str(kind).strip().lower(), "generic")
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(kind).strip().lower()).strip("_")
+    if normalized in TRIGGER_ROUTE_MAP:
+        return TRIGGER_ROUTE_MAP[normalized]
+    for route, keywords in ROUTE_KEYWORD_FALLBACKS:
+        if any(keyword in normalized for keyword in keywords):
+            return route
+    return "generic"
 
 
 def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
@@ -412,6 +461,8 @@ def _fmt_percent(value: Any) -> str | None:
         number = float(value)
         if abs(number) <= 1:
             number *= 100
+        elif abs(number) > 200:
+            number /= 100
         return f"{number:.1f}%".replace(".0%", "%")
     return None
 
@@ -453,11 +504,22 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
     return str(value).split()[0]
 
 
-def _first_offer(merchant: dict[str, Any] | None, category: dict[str, Any] | None) -> str | None:
+def _first_offer(
+    merchant: dict[str, Any] | None,
+    category: dict[str, Any] | None,
+    trigger: dict[str, Any] | None = None,
+) -> str | None:
     offer_sources = [
         _deep_get(merchant, "active_offers", "offers", "offers.active", "campaigns.active_offers"),
         _deep_get(category, "offer_catalog", "offers", "recommended_offers"),
     ]
+    trigger_text = json.dumps(trigger or {}, ensure_ascii=False).lower()
+    trigger_keywords = {
+        token
+        for token in re.split(r"[^a-z0-9₹]+", trigger_text)
+        if len(token) >= 4 and token not in {"true", "false", "null", "kind", "payload"}
+    }
+    candidates: list[tuple[int, str]] = []
     for offers in offer_sources:
         for offer in _as_list(offers):
             if isinstance(offer, dict):
@@ -471,15 +533,26 @@ def _first_offer(merchant: dict[str, Any] | None, category: dict[str, Any] | Non
                     or offer.get("discounted_price")
                     or offer.get("value")
                 )
+                label = ""
                 if name and price:
                     suffix = " (active)" if not status or "active" in status else ""
-                    return f"{name} @ {price}{suffix}"
-                if name:
+                    label = f"{name} @ {price}{suffix}"
+                elif name:
                     suffix = " (active)" if not status or "active" in status else ""
-                    return f"{name}{suffix}"
+                    label = f"{name}{suffix}"
+                if label:
+                    label_l = label.lower()
+                    score = 1 if "active" in label_l or not status else 0
+                    score += sum(4 for token in trigger_keywords if token in label_l)
+                    candidates.append((score, label))
             elif isinstance(offer, str) and offer.strip():
-                return offer.strip()
-    return None
+                label = offer.strip()
+                label_l = label.lower()
+                score = sum(4 for token in trigger_keywords if token in label_l)
+                candidates.append((score, label))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _first_slot(*contexts: dict[str, Any] | None) -> tuple[str | None, str | None]:
@@ -693,7 +766,7 @@ def extract_key_facts(
     if digest:
         facts.append(f"Top digest item: {digest}")
 
-    offer = _first_offer(merchant, category)
+    offer = _first_offer(merchant, category, trigger)
     if offer:
         facts.append(f"Active offers: {offer}")
 
@@ -1033,7 +1106,7 @@ def _fallback_message(
 ) -> dict[str, Any]:
     name = _merchant_name(merchant)
     customer_first = _customer_name(customer)
-    offer = _first_offer(merchant, category) or "your active offer"
+    offer = _first_offer(merchant, category, trigger) or "your active offer"
     fact = _first_fact_with(["performance", "ctr", "view", "festival", "review", "digest", "content"], facts)
     fact = fact or (facts[0] if facts else "your latest Google profile signal")
     hinglish = _needs_hinglish(category, merchant, customer)

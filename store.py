@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -165,11 +166,28 @@ class ContextStore:
     def is_suppressed(self, key: str) -> bool:
         if not key:
             return False
-        with self._lock:
+        try:
+            ttl_seconds = int(os.getenv("SUPPRESSION_TTL_SECONDS", "86400"))
+        except ValueError:
+            ttl_seconds = 86400
+        with self._lock, self._conn:
             row = self._conn.execute(
-                "SELECT 1 FROM suppressions WHERE key = ?", (key,)
+                "SELECT sent_at FROM suppressions WHERE key = ?", (key,)
             ).fetchone()
-        return row is not None
+            if row is None:
+                return False
+            if ttl_seconds <= 0:
+                return True
+            try:
+                sent_at = datetime.fromisoformat(str(row["sent_at"]).replace("Z", "+00:00"))
+            except ValueError:
+                return True
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - sent_at).total_seconds() > ttl_seconds:
+                self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
+                return False
+            return True
 
     def create_conversation(
         self,

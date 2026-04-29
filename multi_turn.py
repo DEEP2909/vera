@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -123,22 +124,25 @@ def _classify_with_llm(message: str, languages: str) -> str:
 
 
 def _heuristic_intent(message: str) -> str:
-    text = (message or "").strip().lower()
+    text = unicodedata.normalize("NFKC", (message or "").strip().lower())
     if is_auto_reply(text):
         return "auto_reply"
-    if re.search(r"\b(join|start|onboard|sign me|register|setup|set up|activate)\b", text):
+    if re.search(r"\b(join|start|onboard|sign me|register|setup|set up|activate)\b|शुरू|जोड़|चालू", text):
         return "join_intent"
-    if re.search(r"\b(yes|yep|sure|go|do it|ok|okay|haan|ha|karo|kar do|proceed|please do)\b", text):
-        if re.search(r"\b(great|awesome|perfect|love|jaldi|abhi)\b", text):
+    if re.search(
+        r"\b(yes|yep|sure|go|do it|ok|okay|haan|ha|haanji|hanji|karo|kar do|proceed|please do)\b|हाँ|हां|जी|ठीक|करो|कर दो",
+        text,
+    ):
+        if re.search(r"\b(great|awesome|perfect|love|jaldi|abhi)\b|अभी|जल्दी|बढ़िया", text):
             return "enthusiastic_accept"
         return "accept"
-    if re.search(r"\b(no|nope|stop|unsubscribe|not interested|mat|nahi|nahin|band)\b", text):
+    if re.search(r"\b(no|nope|stop|unsubscribe|not interested|mat|nahi|nahin|band)\b|नहीं|नही|मत|बंद", text):
         return "decline"
-    if re.search(r"\b(later|baad|kal|not now|abhi nahi|busy)\b", text):
+    if re.search(r"\b(later|baad|kal|not now|abhi nahi|busy)\b|बाद|कल|अभी नहीं|व्यस्त", text):
         return "soft_decline"
-    if "?" in text or re.search(r"\b(what|why|how|when|cost|price|kya|kaise|kitna|kab)\b", text):
+    if "?" in text or re.search(r"\b(what|why|how|when|cost|price|kya|kaise|kitna|kab)\b|क्या|कैसे|कितना|कब|क्यों", text):
         return "question"
-    if re.search(r"\b(which|mean|explain|clarify|samjhao|detail)\b", text):
+    if re.search(r"\b(which|mean|explain|clarify|samjhao|detail)\b|समझाओ|बताओ|विवरण", text):
         return "clarification"
     return "neutral"
 
@@ -268,7 +272,7 @@ def _answer_from_context(
     trigger: dict[str, Any],
     category: dict[str, Any],
 ) -> str:
-    offer = _first_offer(merchant, category) or "the current offer"
+    offer = _first_offer(merchant, category, trigger) or "the current offer"
     facts = extract_key_facts(category, merchant, trigger)
     fact = facts[0] if facts else f"{offer} is active"
     text = message.lower()
@@ -353,7 +357,7 @@ def _fallback_reply(
     name = _merchant_name(merchant)
     customer_first = _customer_name(customer)
     business = _business_name(merchant)
-    offer = _first_offer(merchant, category) or "your current offer"
+    offer = _first_offer(merchant, category, trigger) or "your current offer"
     facts = extract_key_facts(category, merchant, trigger, customer)
     fact = facts[0] if facts else "your latest profile signal"
     last_hook = _last_assistant_body(history)

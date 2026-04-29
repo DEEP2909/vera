@@ -27,13 +27,15 @@ The app uses the official OpenAI Python SDK's Azure client when `AZURE_OPENAI_AP
 
 ```env
 AZURE_OPENAI_API_KEY=your_azure_openai_key_here
-AZURE_OPENAI_ENDPOINT=https://evidentis.openai.azure.com/
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 # Azure uses deployment names here, not necessarily the base model names.
 AZURE_OPENAI_COMPOSE_DEPLOYMENT=gpt-4.1
 AZURE_OPENAI_CLASSIFY_DEPLOYMENT=gpt-4.1-mini
 AZURE_OPENAI_REPLY_DEPLOYMENT=gpt-4.1
 OPENAI_REPLY_MODEL=gpt-4.1
+OPENAI_TIMEOUT_SECONDS=8
+SUPPRESSION_TTL_SECONDS=86400
 ```
 
 For Azure OpenAI, the `model` parameter is the deployment name. If your Azure portal deployment is named `my-gpt4`, set `AZURE_OPENAI_COMPOSE_DEPLOYMENT=my-gpt4` even if the underlying model is GPT-4.1.
@@ -66,7 +68,7 @@ SQLite tables:
 - `suppressions(key, sent_at)`
 - `conversations(conv_id, merchant_id, customer_id, trigger_id, history)`
 
-Set `VERA_DB_PATH` to change the database file. On startup the app attempts to preload JSON contexts from `./expanded/` at version `0`, if that directory exists.
+Set `VERA_DB_PATH` to change the database file. `SUPPRESSION_TTL_SECONDS` controls duplicate-send memory, defaulting to 24 hours. On startup the app attempts to preload JSON contexts from `./expanded/` at version `0`, if that directory exists.
 
 ## Tradeoffs
 

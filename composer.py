@@ -3,13 +3,13 @@ import json
 import os
 import re
 import threading
-import uuid
 from typing import Any
 
 from openai import AzureOpenAI, OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from utils import deep_get as _deep_get
+from utils import first_fact_with as _first_fact_with
 
 
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
@@ -1117,15 +1117,6 @@ def validate_and_fix(
     return hard_cleaned
 
 
-def _first_fact_with(patterns: list[str], facts: list[str]) -> str | None:
-    lowered_patterns = [pattern.lower() for pattern in patterns]
-    for fact in facts:
-        fact_l = fact.lower()
-        if any(pattern in fact_l for pattern in lowered_patterns):
-            return fact
-    return None
-
-
 def _body_with_limit(text: str, limit: int = 320) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
@@ -1228,7 +1219,16 @@ def _suppression_key(
         or _deep_get(customer, "customer_id", "id", "profile.customer_id")
         or "merchant"
     )
-    trigger_id = trigger.get("trigger_id") or trigger.get("id") or f"anon-{uuid.uuid4().hex[:8]}"
+    trigger_id = trigger.get("trigger_id") or trigger.get("id")
+    if not trigger_id:
+        encoded_trigger = json.dumps(
+            trigger,
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+        trigger_id = "anon-" + hashlib.sha1(encoded_trigger.encode("utf-8")).hexdigest()[:12]
     date_key = trigger.get("suppression_date") or trigger.get("date") or trigger.get("scheduled_for") or ""
     raw = f"{merchant_id}:{customer_id}:{trigger_id}:{route}:{date_key}"
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]

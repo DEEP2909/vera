@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -166,7 +167,7 @@ def preload_expanded_dataset(store: ContextStore, root: Path = Path("expanded"))
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            print(f"[vera] skipping {path}: {exc}")
+            logging.warning("[vera] skipping %s: %s", path, exc)
             continue
         for record in _iter_dataset_records(data, path):
             scope, context_id, version, payload = _scope_id_for_record(record, path)
@@ -255,8 +256,14 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
 
     category_id = _candidate_id(trigger, "category_id", "category_slug", "category")
     merchants = []
+    seen_merchant_ids: set[str] = set()
     for context_id, payload, _ in store.list_contexts("merchant"):
+        payload_id = _candidate_id(payload, "merchant_id", "id", "identity.merchant_id") or context_id
+        normalized_id = str(payload_id).strip().lower()
+        if normalized_id in seen_merchant_ids:
+            continue
         if _merchant_matches_category(payload, category_id):
+            seen_merchant_ids.add(normalized_id)
             merchants.append((context_id, payload))
         if len(merchants) >= 5:
             break
@@ -435,8 +442,14 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             STORE.clear_suppression(candidate["pre_key"])
             continue
         if suppression_key != candidate["pre_key"] and not STORE.reserve_suppression(suppression_key):
+            STORE.clear_suppression(candidate["pre_key"])
             continue
-        actions.append(_build_tick_action(request, candidate, composed))
+        try:
+            actions.append(_build_tick_action(request, candidate, composed))
+        except Exception:
+            STORE.clear_suppression(suppression_key)
+            STORE.clear_suppression(candidate["pre_key"])
+            continue
     return actions
 
 

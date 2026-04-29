@@ -17,3 +17,12 @@ def deep_get(obj: Any, *paths: str) -> Any:
         if ok and current not in (None, "", []):
             return current
     return None
+
+
+def first_fact_with(patterns: list[str], facts: list[str]) -> str | None:
+    lowered_patterns = [pattern.lower() for pattern in patterns]
+    for fact in facts:
+        fact_l = fact.lower()
+        if any(pattern in fact_l for pattern in lowered_patterns):
+            return fact
+    return None

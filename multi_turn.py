@@ -9,7 +9,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from composer import (
     _first_offer,
-    _first_fact_with,
     _json_compact,
     extract_key_facts,
     get_llm_client,
@@ -18,6 +17,7 @@ from composer import (
 )
 from store import ContextStore
 from utils import deep_get as _deep_get
+from utils import first_fact_with as _first_fact_with
 
 
 CLASSIFY_MODEL = (
@@ -295,7 +295,7 @@ def _answer_from_context(
 
 
 def _clean_llm_text(value: Any, limit: int = 320) -> str:
-    text = str(value or "").replace("\n...<truncated>", "...").replace("...<truncated>", "...")
+    text = str(value or "").replace("\n...<truncated>", "").replace("...<truncated>", "")
     return _shorten(text.strip(), limit)
 
 

@@ -192,14 +192,6 @@ class ContextStore:
             return False
         ttl_seconds = self._suppression_ttl_seconds()
         with self._lock, self._conn:
-            row = self._conn.execute(
-                "SELECT sent_at FROM suppressions WHERE key = ?", (key,)
-            ).fetchone()
-            if row is not None:
-                if self._suppression_is_expired(row["sent_at"], ttl_seconds):
-                    self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
-                else:
-                    return False
             cursor = self._conn.execute(
                 """
                 INSERT OR IGNORE INTO suppressions (key, sent_at)
@@ -207,7 +199,22 @@ class ContextStore:
                 """,
                 (key, self._utc_now()),
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount > 0:
+                return True
+            row = self._conn.execute(
+                "SELECT sent_at FROM suppressions WHERE key = ?", (key,)
+            ).fetchone()
+            if row is not None and self._suppression_is_expired(row["sent_at"], ttl_seconds):
+                self._conn.execute("DELETE FROM suppressions WHERE key = ?", (key,))
+                cursor = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO suppressions (key, sent_at)
+                    VALUES (?, ?)
+                    """,
+                    (key, self._utc_now()),
+                )
+                return cursor.rowcount > 0
+            return False
 
     def clear_suppression(self, key: str) -> None:
         if not key:

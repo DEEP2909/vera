@@ -11,15 +11,29 @@ Vera combines four layers of context:
 - `TriggerContext` for why the message is going now.
 - `CustomerContext` for customer-facing recall flows.
 
-`composer.py` maps trigger kinds into route-specific prompts, extracts a `KEY FACTS` block before generation, includes scored few-shots per route, calls `gpt-4o` with JSON output, and validates hard constraints such as body length, no URLs, taboo vocabulary, and valid `send_as`.
+`composer.py` maps trigger kinds into route-specific prompts, extracts a `KEY FACTS` block before generation, includes scored few-shots per route, calls Azure OpenAI with JSON output, and validates hard constraints such as body length, no URLs, taboo vocabulary, and valid `send_as`.
 
-`multi_turn.py` detects WhatsApp Business auto-replies, classifies merchant intent with `gpt-4o-mini`, enforces turn limits, and replies from the stored conversation plus merchant context. If `OPENAI_API_KEY` is absent during local testing, deterministic fallbacks still return valid JSON.
+`multi_turn.py` detects WhatsApp Business auto-replies, classifies merchant intent with `gpt-4.1-mini`, enforces turn limits, and replies from the stored conversation plus merchant context. If no OpenAI or Azure OpenAI API key is configured during local testing, deterministic fallbacks still return valid JSON.
 
 ## Model
 
-- Composition: `gpt-4o`, temperature `0`, JSON response format.
-- Intent classification: `gpt-4o-mini`, temperature `0`, JSON response format.
+- Composition: Azure OpenAI deployment `gpt-4.1`, temperature `0`, JSON response format.
+- Intent classification: Azure OpenAI deployment `gpt-4.1-mini`, temperature `0`, JSON response format.
 - Retries: `tenacity` exponential backoff, up to 3 attempts.
+
+## Azure OpenAI
+
+The app uses the official OpenAI Python SDK's Azure client when `AZURE_OPENAI_API_KEY` is set.
+
+```env
+AZURE_OPENAI_API_KEY=your_azure_openai_key_here
+AZURE_OPENAI_ENDPOINT=https://evidentis.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_COMPOSE_DEPLOYMENT=gpt-4.1
+AZURE_OPENAI_CLASSIFY_DEPLOYMENT=gpt-4.1-mini
+```
+
+For Azure OpenAI, the `model` parameter is the deployment name, so set the deployment variables to match the names in your Azure resource if they differ.
 
 ## Run Locally
 

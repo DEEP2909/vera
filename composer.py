@@ -4,12 +4,34 @@ import os
 import re
 from typing import Any
 
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 
-MODEL = "gpt-4o"
+DEFAULT_AZURE_ENDPOINT = "https://evidentis.openai.azure.com/"
+DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
+COMPOSE_MODEL = (
+    os.getenv("AZURE_OPENAI_COMPOSE_DEPLOYMENT")
+    or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    or os.getenv("OPENAI_COMPOSE_MODEL")
+    or "gpt-4.1"
+)
 URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+
+
+def has_llm_credentials() -> bool:
+    return bool(os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
+
+
+def get_llm_client() -> AzureOpenAI | OpenAI:
+    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    if azure_api_key:
+        return AzureOpenAI(
+            api_key=azure_api_key,
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT),
+        )
+    return OpenAI()
 
 
 TRIGGER_ROUTE_MAP = {
@@ -825,7 +847,7 @@ Compose the WhatsApp message now. Keep it specific to the merchant and trigger.
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
 def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int = 512) -> dict[str, Any]:
-    client = OpenAI()
+    client = get_llm_client()
     response = client.chat.completions.create(
         model=model,
         temperature=0,
@@ -889,7 +911,7 @@ Absolute requirements:
 Previous result:
 {_json_compact({k: v for k, v in result.items() if not k.startswith("_")})}
 """.strip()
-    fixed = _chat_json(MODEL, system_prompt, user_prompt + "\n\n" + repair_prompt)
+    fixed = _chat_json(COMPOSE_MODEL, system_prompt, user_prompt + "\n\n" + repair_prompt)
     fixed["_system_prompt"] = system_prompt
     fixed["_user_prompt"] = user_prompt
     fixed["_route"] = result.get("_route")
@@ -1075,7 +1097,7 @@ def compose(
     system_prompt, user_prompt = build_prompts(route, category, merchant, trigger, customer, key_facts)
 
     try:
-        result = _chat_json(MODEL, system_prompt, user_prompt)
+        result = _chat_json(COMPOSE_MODEL, system_prompt, user_prompt)
     except Exception as exc:
         result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
         result["rationale"] += f" OpenAI unavailable or failed: {type(exc).__name__}."

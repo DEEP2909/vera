@@ -4,11 +4,32 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from composer import _deep_get, _first_offer, _json_compact, extract_key_facts, route_for_trigger
+from composer import (
+    _deep_get,
+    _first_offer,
+    _json_compact,
+    extract_key_facts,
+    get_llm_client,
+    has_llm_credentials,
+    route_for_trigger,
+)
 from store import ContextStore
+
+
+CLASSIFY_MODEL = (
+    os.getenv("AZURE_OPENAI_CLASSIFY_DEPLOYMENT")
+    or os.getenv("OPENAI_CLASSIFY_MODEL")
+    or "gpt-4.1-mini"
+)
+REPLY_MODEL = (
+    os.getenv("AZURE_OPENAI_REPLY_DEPLOYMENT")
+    or os.getenv("AZURE_OPENAI_COMPOSE_DEPLOYMENT")
+    or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    or os.getenv("OPENAI_REPLY_MODEL")
+    or "gpt-4.1"
+)
 
 
 AUTO_REPLY_SIGNATURES = [
@@ -63,9 +84,9 @@ def is_auto_reply(message: str) -> bool:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
 def _classify_with_llm(message: str, languages: str) -> str:
-    client = OpenAI()
+    client = get_llm_client()
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=CLASSIFY_MODEL,
         temperature=0,
         response_format={"type": "json_object"},
         messages=[
@@ -125,7 +146,7 @@ def _heuristic_intent(message: str) -> str:
 def classify_intent(message: str, languages: str) -> str:
     if is_auto_reply(message):
         return "auto_reply"
-    if not os.getenv("OPENAI_API_KEY"):
+    if not has_llm_credentials():
         return _heuristic_intent(message)
     try:
         return _classify_with_llm(message, languages)
@@ -262,7 +283,7 @@ def _reply_with_llm(
     category: dict[str, Any],
     customer: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    client = OpenAI()
+    client = get_llm_client()
     route = route_for_trigger(trigger)
     system_prompt = f"""
 You are Vera continuing a WhatsApp conversation with an Indian merchant.
@@ -300,7 +321,7 @@ MERCHANT'S LATEST MESSAGE:
 {message}
 """.strip()
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=REPLY_MODEL,
         temperature=0,
         response_format={"type": "json_object"},
         messages=[
@@ -372,7 +393,7 @@ def compose_reply(
     category: dict[str, Any],
     customer: dict[str, Any] | None,
 ) -> dict[str, str]:
-    if os.getenv("OPENAI_API_KEY"):
+    if has_llm_credentials():
         try:
             result = _reply_with_llm(
                 intent, message, language, history, merchant, trigger, category, customer

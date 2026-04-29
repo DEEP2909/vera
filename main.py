@@ -13,9 +13,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from composer import compose
+from composer import COMPOSE_MODEL, DEFAULT_AZURE_ENDPOINT, compose
 from composer import _deep_get as composer_deep_get
-from multi_turn import handle_reply
+from multi_turn import CLASSIFY_MODEL, handle_reply
 from store import ContextStore
 
 
@@ -408,12 +408,13 @@ def metadata():
     return {
         "team_name": os.getenv("TEAM_NAME", "Vera Codex"),
         "team_members": [m.strip() for m in members.split(",") if m.strip()],
-        "model": "gpt-4o for composition, gpt-4o-mini for intent classification",
+        "model": f"{COMPOSE_MODEL} for composition, {CLASSIFY_MODEL} for intent classification",
         "approach": (
             "Route triggers into specialized prompt templates, extract key facts "
             "before generation, validate hard WhatsApp constraints, persist "
             "contexts/suppressions/conversations in SQLite, and use multi-turn "
-            "intent handling for replies."
+            "intent handling for replies. Azure OpenAI is used when "
+            f"AZURE_OPENAI_API_KEY is configured; default endpoint is {DEFAULT_AZURE_ENDPOINT}."
         ),
         "contact_email": os.getenv("CONTACT_EMAIL", "team@example.com"),
         "version": "1.0.0",

@@ -21,8 +21,8 @@ def deep_get(obj: Any, *paths: str) -> Any:
 
 def first_fact_with(patterns: list[str], facts: list[str]) -> str | None:
     lowered_patterns = [pattern.lower() for pattern in patterns]
-    for fact in facts:
-        fact_l = fact.lower()
-        if any(pattern in fact_l for pattern in lowered_patterns):
-            return fact
+    for pattern in lowered_patterns:
+        for fact in facts:
+            if pattern in fact.lower():
+                return fact
     return None

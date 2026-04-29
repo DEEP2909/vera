@@ -224,12 +224,18 @@ def _resolve_category(store: ContextStore, merchant: dict[str, Any], trigger: di
 def _resolve_customer(store: ContextStore, trigger: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
     customer_id = _candidate_id(trigger, "customer_id", "customer.context_id", "customer.id")
     if customer_id:
-        return customer_id, store.get("customer", customer_id) or trigger.get("customer")
+        return customer_id, store.get("customer", customer_id) or trigger.get("customer") or _synthetic_customer(customer_id)
     customer = trigger.get("customer")
     if isinstance(customer, dict):
         inferred = _candidate_id(customer, "customer_id", "id", "context_id")
         return inferred, customer
     return None, None
+
+
+def _synthetic_customer(customer_id: str) -> dict[str, Any]:
+    parts = str(customer_id).split("_")
+    name = parts[2].title() if len(parts) >= 3 and parts[2] else "there"
+    return {"customer_id": customer_id, "identity": {"name": name}}
 
 
 def _trigger_id(trigger: dict[str, Any], fallback: str) -> str:

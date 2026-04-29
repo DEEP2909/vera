@@ -164,19 +164,36 @@ def _merchant_name(merchant: dict[str, Any] | None) -> str:
     return str(
         _deep_get(
             merchant,
+            "identity.owner_first_name",
+            "owner_first_name",
             "owner_name",
             "merchant_name",
             "business_name",
             "name",
             "identity.owner_name",
             "identity.business_name",
+            "identity.name",
         )
         or "there"
     )
 
 
 def _customer_name(customer: dict[str, Any] | None) -> str:
-    value = _deep_get(customer, "first_name", "name", "profile.first_name", "profile.name")
+    value = _deep_get(
+        customer,
+        "identity.first_name",
+        "identity.name",
+        "first_name",
+        "name",
+        "profile.first_name",
+        "profile.name",
+    )
+    if not value:
+        customer_id = _deep_get(customer, "customer_id", "id")
+        if customer_id:
+            parts = str(customer_id).split("_")
+            if len(parts) >= 3 and parts[2]:
+                value = parts[2].title()
     if not value:
         return "there"
     return str(value).split()[0]
@@ -184,7 +201,7 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
 
 def _business_name(merchant: dict[str, Any] | None) -> str:
     return str(
-        _deep_get(merchant, "business_name", "identity.business_name", "name", "merchant_name")
+        _deep_get(merchant, "identity.name", "business_name", "identity.business_name", "name", "merchant_name")
         or "your business"
     )
 

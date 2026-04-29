@@ -1249,7 +1249,8 @@ def _stable_trigger_for_hash(value: Any) -> Any:
         stable: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if key_text.lower() in _VOLATILE_TRIGGER_HASH_FIELDS:
+            key_l = key_text.lower()
+            if any(field in key_l for field in _VOLATILE_TRIGGER_HASH_FIELDS):
                 continue
             stable[key_text] = _stable_trigger_for_hash(item)
         return stable

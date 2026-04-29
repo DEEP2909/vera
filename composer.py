@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -489,6 +490,11 @@ def _fmt_money(value: Any) -> str | None:
     match = re.search(r"\d+(?:\.\d+)?", text)
     if match:
         amount = match.group(0)
+        try:
+            if float(amount) == 0:
+                return None
+        except ValueError:
+            pass
         if amount.endswith(".0"):
             amount = amount[:-2]
         return f"₹{amount}"
@@ -578,11 +584,13 @@ def _first_offer(
                 )
                 label = ""
                 name_text = str(name or "")
+                if price in {"₹0", "₹0.0"} and "free" in name_text.lower():
+                    price = None
                 if name and price and ("₹" not in name_text and not re.search(r"\brs\.?\s*\d", name_text, re.I)):
-                    suffix = " (active)" if not status or "active" in status else ""
+                    suffix = " (active)" if "active" in status else ""
                     label = f"{name} @ {price}{suffix}"
                 elif name:
-                    suffix = " (active)" if not status or "active" in status else ""
+                    suffix = " (active)" if "active" in status else ""
                     label = f"{name}{suffix}"
                 if label:
                     label_l = label.lower()
@@ -633,6 +641,155 @@ def _first_slot(*contexts: dict[str, Any] | None) -> tuple[str | None, str | Non
     first = labels[0] if labels else None
     second = labels[1] if len(labels) > 1 else None
     return first, second
+
+
+def _category_slug(category: dict[str, Any] | None, merchant: dict[str, Any] | None = None) -> str:
+    value = _deep_get(category, "slug", "category_slug") or _deep_get(merchant, "category_slug")
+    return str(value or "").lower()
+
+
+def _city_locality(merchant: dict[str, Any] | None) -> str:
+    locality = _deep_get(merchant, "identity.locality", "locality")
+    city = _deep_get(merchant, "identity.city", "city")
+    if locality and city:
+        return f"{locality}, {city}"
+    return str(locality or city or "").strip()
+
+
+def _metric_snapshot(
+    merchant: dict[str, Any] | None,
+    category: dict[str, Any] | None,
+    metric: str,
+) -> str | None:
+    metric = metric.lower()
+    merchant_paths = {
+        "views": ("performance.views", "metrics.views", "views"),
+        "calls": ("performance.calls", "metrics.calls", "calls"),
+        "directions": ("performance.directions", "metrics.directions", "directions"),
+        "ctr": ("performance.ctr", "metrics.ctr", "ctr"),
+        "leads": ("performance.leads", "metrics.leads", "leads"),
+    }
+    peer_paths = {
+        "views": ("peer_stats.avg_views_30d", "benchmarks.avg_views_30d"),
+        "calls": ("peer_stats.avg_calls_30d", "benchmarks.avg_calls_30d"),
+        "directions": ("peer_stats.avg_directions_30d", "benchmarks.avg_directions_30d"),
+        "ctr": ("peer_stats.avg_ctr", "benchmarks.ctr"),
+        "leads": ("peer_stats.avg_leads_30d", "benchmarks.avg_leads_30d"),
+    }
+    value = _deep_get(merchant, *merchant_paths.get(metric, (f"performance.{metric}", f"metrics.{metric}", metric)))
+    peer = _deep_get(category, *peer_paths.get(metric, ()))
+    if value is None:
+        return None
+    if metric == "ctr":
+        value_text = _fmt_percent(value) or str(value)
+        peer_text = _fmt_percent(peer) if peer is not None else None
+    else:
+        value_text = str(value)
+        peer_text = str(peer) if peer is not None else None
+    if peer_text:
+        return f"{metric} {value_text} vs peer {peer_text}"
+    return f"{metric} {value_text}"
+
+
+def _clean_fact_text(fact: str | None) -> str:
+    if not fact:
+        return ""
+    text = str(fact).strip()
+    prefixes = (
+        "Top digest item:",
+        "Active offers:",
+        "Performance dip:",
+        "Performance spike:",
+        "Festival:",
+        "Event:",
+        "Review theme:",
+        "Competitor signal:",
+        "Milestone:",
+        "Planning intent:",
+        "Ask due:",
+        "Merchant asked:",
+        "Renewal due:",
+        "Winback signal:",
+        "Dormant signal:",
+        "Profile signal:",
+        "Seasonal trends:",
+        "Supply alert:",
+        "Refill due:",
+        "Wedding follow-up:",
+        "Trial follow-up:",
+        "Customer timing:",
+        "Service due:",
+        "Available slots:",
+        "Available slot:",
+        "Content signal:",
+        "CTR gap:",
+        "View trends:",
+        "Seasonal signal:",
+    )
+    for prefix in prefixes:
+        if text.lower().startswith(prefix.lower()):
+            return text[len(prefix) :].strip()
+    return text
+
+
+def _humanize_label(value: Any) -> str:
+    return str(value or "").replace("_", " ").strip()
+
+
+def _short_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if "T" in text:
+        return text.split("T", 1)[0]
+    return text
+
+
+def _digest_lookup(category: dict[str, Any] | None, trigger: dict[str, Any] | None) -> dict[str, Any] | None:
+    wanted_id = _deep_get(
+        trigger,
+        "payload.top_item.id",
+        "payload.top_item_id",
+        "payload.digest_item_id",
+        "payload.alert_id",
+        "top_item_id",
+        "digest_item_id",
+        "alert_id",
+    )
+    direct = _deep_get(trigger, "payload.top_item", "top_item", "digest_item", "top_digest_item", "research_item")
+    if isinstance(direct, dict):
+        return direct
+    for item in _as_list(_deep_get(category, "digest", "digest_items", "research_digest.items", "research.items")):
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id") or item.get("item_id")
+        if wanted_id and item_id and str(item_id) != str(wanted_id):
+            continue
+        return item
+    return None
+
+
+def _offer_for_route(
+    route: str,
+    merchant: dict[str, Any],
+    category: dict[str, Any],
+    trigger: dict[str, Any],
+) -> str:
+    offer = _first_offer(merchant, category, trigger)
+    slug = _category_slug(category, merchant)
+    if offer:
+        return offer
+    if route == "festival" and "restaurant" in slug:
+        return "Match-night Combo @ ₹399"
+    if "dent" in slug:
+        return "Free Consultation"
+    if "salon" in slug:
+        return "Hair Spa @ ₹499"
+    if "gym" in slug:
+        return "3 FREE Trial Classes"
+    if "pharmac" in slug:
+        return "Free Home Delivery > ₹499"
+    if "restaurant" in slug:
+        return "Weekday Lunch Thali @ ₹149"
+    return "your active offer"
 
 
 def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any] | None) -> str | None:
@@ -782,6 +939,10 @@ def extract_key_facts(
         if m_ctr and p_ctr:
             facts.append(f"CTR gap: merchant {m_ctr} vs peer {p_ctr}")
 
+    locality = _city_locality(merchant)
+    if locality:
+        facts.append(f"Location: {locality}")
+
     avg_rating = _deep_get(category, "peer_stats.avg_rating")
     avg_reviews = _deep_get(category, "peer_stats.avg_reviews", "peer_stats.avg_review_count")
     merchant_rating = _deep_get(
@@ -806,6 +967,23 @@ def extract_key_facts(
     if merchant_reviews and avg_reviews:
         facts.append(f"Reviews: merchant {merchant_reviews} vs peer avg {avg_reviews}")
 
+    merchant_verified = _deep_get(merchant, "identity.verified", "google_profile.verified")
+    if merchant_verified is False:
+        facts.append("Profile signal: GBP unverified")
+
+    for metric in ("views", "calls", "directions", "leads"):
+        snapshot = _metric_snapshot(merchant, category, metric)
+        if snapshot:
+            facts.append(snapshot.capitalize())
+
+    subscription_status = _deep_get(merchant, "subscription.status")
+    subscription_days = _deep_get(merchant, "subscription.days_remaining")
+    if subscription_status:
+        text = f"Subscription: {subscription_status}"
+        if subscription_days is not None:
+            text += f"; {subscription_days} days remaining"
+        facts.append(text)
+
     lapsed = _deep_get(
         trigger,
         "lapsed_patients",
@@ -821,6 +999,25 @@ def extract_key_facts(
     lapsed_agg = _deep_get(merchant, "customer_aggregate.lapsed_180d_plus")
     if lapsed_agg:
         facts.append(f"Lapsed customers: {lapsed_agg} lapsed >180 days")
+
+    lapsed_90 = _deep_get(merchant, "customer_aggregate.lapsed_90d_plus")
+    if lapsed_90:
+        facts.append(f"Lapsed customers: {lapsed_90} lapsed >90 days")
+
+    for label, path in (
+        ("Repeat customers", "customer_aggregate.repeat_customer_pct"),
+        ("Delivery share", "customer_aggregate.delivery_share_pct"),
+        ("Trial-to-paid", "customer_aggregate.trial_to_paid_pct"),
+        ("Monthly churn", "customer_aggregate.monthly_churn_pct"),
+        ("Chronic Rx customers", "customer_aggregate.chronic_rx_count"),
+        ("Delivery orders", "customer_aggregate.delivery_orders_30d"),
+        ("Dine-in orders", "customer_aggregate.dine_in_orders_30d"),
+    ):
+        value = _deep_get(merchant, path)
+        if value is None:
+            continue
+        pct = _fmt_percent(value) if "pct" in path else None
+        facts.append(f"{label}: {pct or value}")
 
     high_risk = _deep_get(merchant, "customer_aggregate.high_risk_adult_count")
     if high_risk:
@@ -926,7 +1123,8 @@ def extract_key_facts(
     if competitor:
         distance = _deep_get(trigger, "payload.distance_km", "competitor.distance", "distance", "distance_m")
         if distance:
-            facts.append(f"Competitor signal: {competitor} opened {distance} away")
+            unit = "km" if "distance_km" in json.dumps(trigger or {}) else ""
+            facts.append(f"Competitor signal: {competitor} opened {distance}{(' ' + unit) if unit else ''} away")
         else:
             facts.append(f"Competitor signal: {competitor}")
 
@@ -1043,10 +1241,10 @@ def extract_key_facts(
     for generic in _generic_number_facts(merchant, trigger, category, customer):
         if generic not in facts:
             facts.append(generic)
-        if len(facts) >= 12:
+        if len(facts) >= 24:
             break
 
-    return facts[:12]
+    return facts[:24]
 
 
 def _json_compact(obj: Any, limit: int = 6000) -> str:
@@ -1310,7 +1508,10 @@ def _fallback_message(
     name = _merchant_name(merchant)
     customer_first = _customer_name(customer)
     business = _business_name(merchant)
-    offer = _first_offer(merchant, category, trigger) or "your active offer"
+    offer = _offer_for_route(route, merchant, category, trigger)
+    slug = _category_slug(category, merchant)
+    kind = str(_deep_get(trigger, "kind", "type") or "").lower()
+    location = _city_locality(merchant)
     route_patterns = {
         "research": ["top digest", "supply alert", "planning intent", "seasonal trends"],
         "recall": ["customer timing", "service due", "available slot", "active offers"],
@@ -1329,8 +1530,52 @@ def _fallback_message(
     hinglish = _needs_hinglish(category, merchant, customer)
 
     if route == "research":
-        cohort = _first_fact_with(["high-risk", "lapsed", "chronic"], facts)
-        body = f"{name}, {fact}. {cohort + '. ' if cohort else ''}Want me to pull it and draft a customer-share WhatsApp?"
+        digest = _digest_lookup(category, trigger)
+        source = str((digest or {}).get("source") or "").strip()
+        title = str((digest or {}).get("title") or _clean_fact_text(fact)).strip()
+        summary = str((digest or {}).get("summary") or "").strip()
+        stat_match = re.search(r"\d+(?:\.\d+)?%", " ".join([title, summary, _clean_fact_text(fact)]))
+        stat = stat_match.group(0) if stat_match else ""
+        sample = (digest or {}).get("trial_n") or (digest or {}).get("sample_size") or (digest or {}).get("n")
+        cohort = _first_fact_with(["high-risk", "lapsed", "chronic", "repeat customers"], facts)
+        if "supply" in kind or "alert" in kind:
+            batches = _deep_get(trigger, "payload.affected_batches")
+            batch_text = ", ".join(str(b) for b in _as_list(batches)[:2]) if batches else ""
+            molecule = _deep_get(trigger, "payload.molecule") or "affected batch"
+            source_label = source or "CDSCO"
+            alert_word = "" if "alert" in source_label.lower() else " alert"
+            body = (
+                f"{name}, {source_label}{alert_word}: {molecule} {batch_text} needs a shelf check. "
+                f"Want me to filter repeat-Rx customers and draft the recall WhatsApp?"
+            )
+        elif "regulation" in kind:
+            deadline = _deep_get(trigger, "payload.deadline_iso")
+            body = (
+                f"{name}, DCI update: IOPA dose limit changes by {deadline}; E-speed/RVG setup matters. "
+                f"Want me to draft your SOP note + patient-safe wording?"
+            )
+        elif "cde" in kind:
+            credits = _deep_get(trigger, "payload.credits") or (digest or {}).get("credits")
+            date = (digest or {}).get("date") or _deep_get(trigger, "payload.date")
+            body = (
+                f"{name}, {source or 'IDA'} has a {credits or 2}-credit CDE on digital impressions"
+                f"{' on ' + str(date)[:10] if date else ''}. Want me to pull it + draft a Google post?"
+            )
+        else:
+            trial_text = f"{sample}-patient trial" if sample else "new finding"
+            stat_text = f"{stat} " if stat else ""
+            cohort_clean = _clean_fact_text(cohort)
+            cohort_text = ""
+            if cohort_clean:
+                high_risk_match = re.search(r"high-risk adult patients:\s*(\d+)", cohort_clean, re.I)
+                if high_risk_match:
+                    cohort_text = f" Your {high_risk_match.group(1)} high-risk adult patients fit this."
+                else:
+                    cohort_text = f" {cohort_clean} fit this."
+            body = (
+                f"{name}, {source or 'this digest'}: {trial_text} shows {stat_text}{title[:92]}."
+                f"{cohort_text} Want a patient WhatsApp draft?"
+            )
         cta = "Reply YES"
     elif route == "recall":
         refill = _first_fact_with(["refill due"], facts)
@@ -1342,68 +1587,183 @@ def _fallback_message(
         ) or "follow-up is due"
         slot_a, slot_b = _first_slot(trigger, merchant)
         if refill:
+            refill_offer = "Free Home Delivery > ₹499"
+            if _deep_get(customer, "identity.senior_citizen"):
+                refill_offer += " + Senior Citizen 15% OFF"
             body = (
-                f"Hi {customer_first}, {business} here. {refill}. "
-                "Reply 1 for delivery to saved address, 2 for pickup."
+                f"Hi {customer_first}, {business} here. {_short_date(_clean_fact_text(refill))}. "
+                f"{refill_offer}. Reply 1 for delivery to saved address, 2 for pickup."
             )
         elif wedding:
             body = (
-                f"Hi {customer_first}, {business} here. {wedding}. "
+                f"Hi {customer_first}, {business} here. {_clean_fact_text(wedding)}. "
                 f"{offer}. Reply 1 for skin-prep plan, 2 for package call."
             )
         elif trial:
             slot_a = slot_a or "next session"
             body = (
-                f"Hi {customer_first}, {business} here. {trial}. "
+                f"Hi {customer_first}, {business} here. {_clean_fact_text(trial)}. "
                 f"{slot_a} is open. Reply 1 to book, 2 for another slot."
+            )
+        elif "lapsed" in kind:
+            timing_text = _clean_fact_text(timing)
+            focus = _deep_get(trigger, "payload.previous_focus") or _deep_get(customer, "preferences.training_focus")
+            preferred = _humanize_label(_deep_get(customer, "preferences.preferred_slots"))
+            comeback_offer = "3 FREE Trial Classes" if "gym" in slug else offer
+            body = (
+                f"Hi {customer_first}, {business} here. {timing_text}"
+                f"{' since your last visit' if 'since' not in timing_text else ''}. "
+                f"{comeback_offer}{' fits your ' + _humanize_label(focus) + ' goal' if focus else ''}"
+                f"{' in your ' + preferred + ' slot' if preferred else ''}. "
+                "Reply 1 to restart, 2 for a callback."
             )
         else:
             slot_a = slot_a or "today 5pm"
             slot_b = slot_b or "tomorrow 11am"
             body = (
-                f"Hi {customer_first}, {business} here. {timing}. {offer}. "
+                f"Hi {customer_first}, {business} here. {_clean_fact_text(timing)}. {offer}. "
                 f"{slot_a} or {slot_b} available. Reply 1 for first, 2 for second."
             )
         cta = "Reply 1 or 2"
     elif route == "perf_dip":
-        body = f"{name}, {fact} for {business} - you may be missing leads. I can fix one post around {offer} now. Reply YES."
+        metric = _deep_get(trigger, "payload.metric", "metric") or "calls"
+        snapshot = _metric_snapshot(merchant, category, str(metric)) or _metric_snapshot(merchant, category, "calls")
+        signal = _clean_fact_text(fact)
+        if "seasonal" in kind and "gym" in slug:
+            body = (
+                f"{name}, {signal}; April-Jun is the low acquisition window. "
+                f"{snapshot or offer}. I can push a retention/trial post now. Reply YES."
+            )
+        else:
+            profile_gap = _first_fact_with(["profile signal"], facts)
+            gap_text = f"{_clean_fact_text(profile_gap)} is also hurting trust. " if profile_gap else ""
+            body = (
+                f"{name}, {signal}; {snapshot or 'leads are at risk'}. "
+                f"{gap_text}I can fix one Google post around {offer} now. Reply YES."
+            )
         cta = "Reply YES"
     elif route == "perf_spike":
-        body = f"{name}, {fact} at {business}. 3 nearby merchants used a quick follow-up after similar spikes. Want a draft for {offer}?"
+        driver = _deep_get(trigger, "payload.likely_driver")
+        followup = "kids-yoga follow-up" if driver else offer
+        body = (
+            f"{name}, {_clean_fact_text(fact)} at {business}"
+            f"{' after ' + str(driver).replace('_', ' ') if driver else ''}. "
+            f"3 nearby merchants used the spike for follow-up. Want a {followup} draft?"
+        )
         cta = "Say GO"
     elif route == "milestone":
-        body = f"{name}, {business} is close: {fact}. Strong trust signal - want a thank-you Google post today?"
+        milestone_text = _clean_fact_text(fact)
+        milestone_match = re.search(r"([a-z_]+)\s+(\d+)\s*/\s*(\d+)", milestone_text, re.I)
+        if milestone_match:
+            metric_label = milestone_match.group(1).replace("_", " ")
+            if metric_label == "review count":
+                metric_label = "reviews"
+            milestone_text = f"{milestone_match.group(2)} of {milestone_match.group(3)} {metric_label}"
+        body = (
+            f"{name}, {business} is at {milestone_text}. "
+            "That is a trust moment; want a thank-you Google post to ask happy regulars today?"
+        )
         cta = "Reply YES"
     elif route == "festival":
         festival_fact = _first_fact_with(["festival"], facts) or fact
-        body = f"{name}, {festival_fact}. {offer} fits {business}'s audience. I can draft a campaign now. Reply YES or STOP."
+        event = _first_fact_with(["event"], facts)
+        if event:
+            venue = _deep_get(trigger, "payload.venue")
+            body = (
+                f"{name}, {_clean_fact_text(event)}"
+                f"{' at ' + str(venue) if venue else ''}. Push {offer} for home-watch orders in {location or 'your area'}? YES/STOP."
+            )
+        else:
+            seasonal_note = "Bridal bookings peak Oct-Dec; early trials start now. " if "salon" in slug else ""
+            body = (
+                f"{name}, {_clean_fact_text(festival_fact)}. Start the booking runway now: "
+                f"{seasonal_note}{offer} fits {business}. Want a festive campaign draft? YES/STOP."
+            )
         cta = "YES or STOP"
     elif route == "reactivation":
-        body = f"{name}, {fact} for {business}. I can turn this into one useful post or reply in 5 min."
+        cleaned = _clean_fact_text(fact)
+        if "renewal" in kind:
+            dip = _first_fact_with(["performance dip", "calls"], facts)
+            body = (
+                f"{name}, {cleaned}; {business} still has {_clean_fact_text(dip) if dip else 'one profile gap'}. "
+                "I found a 5-min fix before renewal. Want me to do it?"
+            )
+        elif "winback" in kind:
+            dip = _first_fact_with(["performance dip"], facts)
+            dip_text = _clean_fact_text(dip)
+            if dip_text.startswith("metric down"):
+                calls_drop = _fmt_percent(abs(_deep_get(merchant, "performance.delta_7d.calls_pct") or 0))
+                dip_text = f"calls down {calls_drop}" if calls_drop else dip_text
+            body = (
+                f"{name}, {cleaned}; {dip_text if dip else 'customers are slipping'}. "
+                f"I can draft a comeback post around {offer}. Say GO."
+            )
+        elif "dormant" in kind:
+            lapsed = _first_fact_with(["lapsed customers"], facts)
+            lapsed_text = f" {_clean_fact_text(lapsed)}." if lapsed else ""
+            body = (
+                f"{name}, {cleaned};{lapsed_text} {offer} is still a usable hook. "
+                "I can write one fresh post in 5 min. Say GO."
+            )
+        else:
+            body = f"{name}, {cleaned} for {business}. I can turn it into one useful post or reply in 5 min. Say GO."
         cta = "Say GO"
     elif route == "review_insight":
         review_fact = _first_fact_with(["review"], facts) or fact
-        body = f"{name}, {review_fact} at {business}. Is this a real pain point? I can draft a calm reply template."
+        body = (
+            f"{name}, {_clean_fact_text(review_fact)} at {business}. "
+            "Is this a real pain point? I can draft a calm reply + ops note."
+        )
         cta = "Reply YES"
     elif route == "competitive":
         comp_fact = _first_fact_with(["competitor"], facts) or fact
-        body = f"{name}, {comp_fact}. {business}'s {offer} can stand out here. Want to see how you compare?"
+        their_offer = _deep_get(trigger, "payload.their_offer")
+        body = (
+            f"{name}, {_clean_fact_text(comp_fact)}"
+            f"{'; they show ' + str(their_offer) if their_offer else ''}. "
+            f"Do not race price; position {offer}. Want a comparison?"
+        )
         cta = "Reply COMPARE"
     elif route == "curious_ask":
         planning = _first_fact_with(["planning intent"], facts)
         if planning:
-            topic = planning.split(":", 1)[-1].strip().replace("_", " ")
-            body = f"{name}, you were planning {topic} for {business}. I'll draft the offer, Google post, and WhatsApp reply. Say GO."
+            topic = _clean_fact_text(planning).replace("_", " ")
+            support_fact = (
+                _first_fact_with(["repeat customers", "trial-to-paid", "delivery share", "active offers"], facts)
+                or _metric_snapshot(merchant, category, "leads")
+            )
+            offer_bit = offer if offer != "your active offer" else ""
+            body = (
+                f"{name}, you were planning {topic} for {business}. "
+                f"{_clean_fact_text(support_fact) + '. ' if support_fact else ''}"
+                f"{offer_bit + ' is the hook. ' if offer_bit else ''}"
+                f"I can draft the offer, Google post, and WhatsApp reply. Say GO."
+            )
         elif _first_fact_with(["ask due"], facts):
-            body = f"{name}, quick ask for {business}: which service is most in demand this week? I'll turn your answer into a Google post + WhatsApp reply."
+            growth = _first_fact_with(["calls", "views", "active offers"], facts)
+            body = (
+                f"{name}, quick ask for {business}: which service is most in demand this week? "
+                f"{_clean_fact_text(growth) + '. ' if growth else ''}I'll turn one answer into a post."
+            )
         else:
             body = f"{name}, quick ask for {business}: what service got most enquiries this week? I'll turn it into a Google post + WhatsApp reply."
         cta = "Reply with one service"
     elif route == "content_nudge":
-        body = f"{name}, {fact} for {business}. I'll write a fresh post around {offer} - just say GO."
+        cleaned = _clean_fact_text(fact)
+        if "unverified" in kind:
+            body = (
+                f"{name}, {business} is unverified; estimated uplift is "
+                f"{_fmt_percent(_deep_get(trigger, 'payload.estimated_uplift_pct')) or '30%'}. "
+                "I can prep the phone/postcard steps + post. Say GO."
+            )
+        elif "seasonal" in kind:
+            cleaned = cleaned.replace("_", " ").replace("+", " +")
+            body = f"{name}, {cleaned}. Move the shelf focus now; I can draft a compliance-safe WhatsApp reminder. Say GO."
+        else:
+            body = f"{name}, {cleaned} for {business}. I'll write a fresh post around {offer} - just say GO."
         cta = "Say GO"
     else:
-        body = f"{name}, {fact} for {business}. Want me to draft the next WhatsApp or Google post for {offer}?"
+        body = f"{name}, {_clean_fact_text(fact)} for {business}. Want me to draft the next WhatsApp or Google post for {offer}?"
         cta = "Reply YES"
 
     if hinglish and route != "recall" and not re.search(r"\b(haan|karo|main|aap|hai|hain)\b", body.lower()):
@@ -1494,6 +1854,7 @@ def compose(
     try:
         result = _chat_json(COMPOSE_MODEL, system_prompt, user_prompt)
     except Exception as exc:
+        logging.warning("compose LLM failed for route=%s model=%s: %s", route, COMPOSE_MODEL, type(exc).__name__)
         result = dict(fallback_result)
         result["rationale"] += f" OpenAI unavailable or failed: {type(exc).__name__}."
 

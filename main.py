@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -263,7 +264,8 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    preload_expanded_dataset(STORE)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, preload_expanded_dataset, STORE)
     yield
     STORE.close()
 
@@ -301,10 +303,70 @@ def upsert_context(request: ContextRequest):
     }
 
 
+def _build_tick_action(
+    request: TickRequest,
+    candidate: dict[str, Any],
+    composed: dict[str, Any],
+) -> dict[str, Any]:
+    merchant_id = candidate["merchant_id"]
+    customer_id = candidate["customer_id"]
+    trigger_id = candidate["trigger_id"]
+    category = candidate["category"]
+    body = composed["body"]
+    cta = composed["cta"]
+    send_as = composed["send_as"]
+    route = composed.get("route") or "generic"
+    suppression_key = composed["suppression_key"]
+    conversation_id = f"conv_{uuid.uuid4().hex}"
+    STORE.create_conversation(
+        conversation_id,
+        merchant_id,
+        trigger_id,
+        customer_id=customer_id,
+        metadata={
+            "merchant_id": merchant_id,
+            "trigger_id": trigger_id,
+            "category_slug": (
+                category.get("slug")
+                or category.get("category_slug")
+                or category.get("id")
+            ),
+            "customer_id": customer_id,
+            "turn": 0,
+            "suppression_key": suppression_key,
+        },
+        first_message={
+            "role": "assistant",
+            "at": request.now or utc_now(),
+            "body": body,
+            "cta": cta,
+            "send_as": send_as,
+            "trigger_id": trigger_id,
+            "route": route,
+        },
+    )
+    STORE.mark_suppressed(candidate["pre_key"])
+    STORE.mark_suppressed(suppression_key)
+    return {
+        "conversation_id": conversation_id,
+        "merchant_id": merchant_id,
+        "customer_id": customer_id,
+        "send_as": send_as,
+        "trigger_id": trigger_id,
+        "template_name": route,
+        "template_params": [route]
+        + [str(fact) for fact in composed.get("key_facts", [])[:3]],
+        "body": body,
+        "cta": cta,
+        "suppression_key": suppression_key,
+        "rationale": composed.get("rationale", ""),
+    }
+
+
 def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for available_id in request.available_triggers:
-        if len(actions) >= 5:
+        if len(candidates) >= 5:
             break
         trigger = STORE.get("trigger", available_id)
         if trigger is None:
@@ -313,7 +375,7 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
         customer_id, customer = _resolve_customer(STORE, trigger)
 
         for merchant_id, merchant in _candidate_merchants_for_trigger(STORE, trigger):
-            if len(actions) >= 5:
+            if len(candidates) >= 5:
                 break
             if not merchant:
                 continue
@@ -321,61 +383,48 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             if STORE.is_suppressed(pre_key):
                 continue
             category = _resolve_category(STORE, merchant, trigger)
-            composed = compose(category, merchant, trigger, customer)
-            suppression_key = composed["suppression_key"]
-            if STORE.is_suppressed(suppression_key):
-                continue
-
-            conversation_id = f"conv_{uuid.uuid4().hex}"
-            body = composed["body"]
-            cta = composed["cta"]
-            send_as = composed["send_as"]
-            route = composed.get("route") or "generic"
-            STORE.create_conversation(
-                conversation_id,
-                merchant_id,
-                trigger_id,
-                customer_id=customer_id,
-                metadata={
-                    "merchant_id": merchant_id,
-                    "trigger_id": trigger_id,
-                    "category_slug": (
-                        category.get("slug")
-                        or category.get("category_slug")
-                        or category.get("id")
-                    ),
-                    "customer_id": customer_id,
-                    "turn": 0,
-                    "suppression_key": suppression_key,
-                },
-                first_message={
-                    "role": "assistant",
-                    "at": request.now or utc_now(),
-                    "body": body,
-                    "cta": cta,
-                    "send_as": send_as,
-                    "trigger_id": trigger_id,
-                    "route": route,
-                },
-            )
-            STORE.mark_suppressed(pre_key)
-            STORE.mark_suppressed(suppression_key)
-            actions.append(
+            candidates.append(
                 {
-                    "conversation_id": conversation_id,
                     "merchant_id": merchant_id,
+                    "merchant": merchant,
                     "customer_id": customer_id,
-                    "send_as": send_as,
+                    "customer": customer,
                     "trigger_id": trigger_id,
-                    "template_name": route,
-                    "template_params": [route]
-                    + [str(fact) for fact in composed.get("key_facts", [])[:3]],
-                    "body": body,
-                    "cta": cta,
-                    "suppression_key": suppression_key,
-                    "rationale": composed.get("rationale", ""),
+                    "trigger": trigger,
+                    "category": category,
+                    "pre_key": pre_key,
                 }
             )
+    if not candidates:
+        return []
+
+    actions: list[dict[str, Any]] = []
+    max_workers = min(5, len(candidates))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                compose,
+                candidate["category"],
+                candidate["merchant"],
+                candidate["trigger"],
+                candidate["customer"],
+            ): candidate
+            for candidate in candidates
+        }
+        for future in as_completed(futures):
+            if len(actions) >= 5:
+                break
+            candidate = futures[future]
+            try:
+                composed = future.result()
+            except Exception:
+                continue
+            suppression_key = composed.get("suppression_key")
+            if not suppression_key:
+                continue
+            if STORE.is_suppressed(candidate["pre_key"]) or STORE.is_suppressed(suppression_key):
+                continue
+            actions.append(_build_tick_action(request, candidate, composed))
     return actions
 
 
@@ -386,8 +435,7 @@ async def tick(request: TickRequest):
     return {"actions": actions}
 
 
-@app.post("/v1/reply")
-def reply(request: ReplyRequest):
+def _reply_sync(request: ReplyRequest):
     return handle_reply(
         STORE,
         conversation_id=request.conversation_id,
@@ -398,6 +446,12 @@ def reply(request: ReplyRequest):
         received_at=request.received_at,
         turn_number=request.turn_number,
     )
+
+
+@app.post("/v1/reply")
+async def reply(request: ReplyRequest):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _reply_sync, request)
 
 
 @app.get("/v1/healthz")

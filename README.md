@@ -54,11 +54,10 @@ For Azure OpenAI, the `model` parameter is the deployment name. If your Azure po
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
 uvicorn main:app --reload
 ```
 
-On macOS/Linux, activate with `source .venv/bin/activate`.
+Create the env file with `copy .env.example .env` on Windows or `cp .env.example .env` on macOS/Linux. On macOS/Linux, activate with `source .venv/bin/activate`.
 
 ## Endpoints
 

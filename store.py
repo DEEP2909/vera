@@ -38,6 +38,12 @@ class ContextStore:
             )
             self._conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_contexts_scope
+                ON contexts(key)
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS suppressions (
                     key TEXT PRIMARY KEY,
                     sent_at TEXT NOT NULL

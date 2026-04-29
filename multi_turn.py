@@ -296,6 +296,7 @@ def _reply_with_llm(
 ) -> dict[str, Any]:
     client = get_llm_client()
     route = route_for_trigger(trigger)
+    recent_history = [entry for entry in history if entry.get("type") != "metadata"][-4:]
     system_prompt = f"""
 You are Vera continuing a WhatsApp conversation with an Indian merchant.
 Intent: {intent}
@@ -314,7 +315,7 @@ Rules:
 """.strip()
     user_prompt = f"""
 LAST 4 TURNS:
-{_json_compact(history[-4:], 2500)}
+{_json_compact(recent_history, 2500)}
 
 MERCHANT CONTEXT:
 {_json_compact(merchant, 3000)}

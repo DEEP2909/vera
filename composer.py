@@ -95,7 +95,7 @@ TRIGGER_ROUTE_MAP = {
 
 ROUTE_KEYWORD_FALLBACKS = (
     ("perf_spike", ("spike", "surge", "growth")),
-    ("perf_dip", ("perf_dip", "dip", "drop", "below_peer", "decline")),
+    ("perf_dip", ("dip", "drop", "below_peer", "decline")),
     ("recall", ("recall", "lapsed", "refill", "appointment", "trial", "followup", "follow_up", "wedding")),
     ("research", ("research", "digest", "regulation", "compliance", "cde", "webinar", "supply", "alert")),
     ("festival", ("festival", "diwali", "holi", "ipl", "match", "event")),
@@ -612,10 +612,15 @@ def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any
                 parts = []
                 if source_name:
                     parts.append(str(source_name))
-                if stat:
-                    parts.append(str(stat))
-                if title:
-                    parts.append(str(title))
+                    if stat:
+                        parts.append(str(stat))
+                    if title:
+                        parts.append(str(title))
+                else:
+                    if title:
+                        parts.append(str(title))
+                    if stat:
+                        parts.append(str(stat))
                 if sample:
                     parts.append(f"n={sample}")
                 if page:
@@ -1069,8 +1074,12 @@ def _final_cleanup(
 def _hard_safe_result(result: dict[str, Any], trigger: dict[str, Any]) -> dict[str, Any]:
     send_as = "merchant_on_behalf" if route_for_trigger(trigger) == "recall" else "vera"
     cta = "Reply 1 or 2" if send_as == "merchant_on_behalf" else "Reply YES"
+    facts = result.get("_key_facts") or []
+    fact = str(facts[0]) if facts else "your latest signal"
+    merchant_name = str(result.get("_merchant_name") or "").strip()
+    prefix = f"{merchant_name}, " if merchant_name else ""
     return {
-        "body": "I found one specific signal in your context. Want me to draft the message?",
+        "body": _body_with_limit(f"{prefix}one signal is ready: {fact}. Want me to draft the message?"),
         "cta": cta,
         "send_as": send_as,
         "suppression_key": str(result.get("suppression_key") or ""),
@@ -1237,6 +1246,7 @@ def compose(
     key_facts = extract_key_facts(category, merchant, trigger, customer)
     system_prompt, user_prompt = build_prompts(route, category, merchant, trigger, customer, key_facts)
     fallback_result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
+    safe_fallback_result = fallback_result if not _validation_errors(fallback_result, category) else None
 
     try:
         result = _chat_json(COMPOSE_MODEL, system_prompt, user_prompt)
@@ -1248,10 +1258,11 @@ def compose(
     result["_user_prompt"] = user_prompt
     result["_route"] = route
     result["_key_facts"] = key_facts
+    result["_merchant_name"] = _merchant_name(merchant)
     if not result.get("suppression_key"):
         result["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
 
-    validated = validate_and_fix(result, category, trigger, fallback_result=fallback_result)
+    validated = validate_and_fix(result, category, trigger, fallback_result=safe_fallback_result)
     if not validated.get("suppression_key"):
         validated["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
     validated["route"] = route

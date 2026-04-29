@@ -31,6 +31,8 @@ AZURE_OPENAI_ENDPOINT=https://evidentis.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 AZURE_OPENAI_COMPOSE_DEPLOYMENT=gpt-4.1
 AZURE_OPENAI_CLASSIFY_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_REPLY_DEPLOYMENT=gpt-4.1
+OPENAI_REPLY_MODEL=gpt-4.1
 ```
 
 For Azure OpenAI, the `model` parameter is the deployment name, so set the deployment variables to match the names in your Azure resource if they differ.
@@ -61,7 +63,7 @@ SQLite tables:
 
 - `contexts(key, version, payload)`
 - `suppressions(key, sent_at)`
-- `conversations(conv_id, merchant_id, trigger_id, history)`
+- `conversations(conv_id, merchant_id, customer_id, trigger_id, history)`
 
 Set `VERA_DB_PATH` to change the database file. On startup the app attempts to preload JSON contexts from `./expanded/` at version `0`, if that directory exists.
 

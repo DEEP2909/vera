@@ -48,11 +48,18 @@ class ContextStore:
                 CREATE TABLE IF NOT EXISTS conversations (
                     conv_id TEXT PRIMARY KEY,
                     merchant_id TEXT,
+                    customer_id TEXT,
                     trigger_id TEXT,
                     history TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "customer_id" not in columns:
+                self._conn.execute("ALTER TABLE conversations ADD COLUMN customer_id TEXT")
 
     @staticmethod
     def _context_key(scope: str, context_id: str) -> str:
@@ -165,6 +172,7 @@ class ContextStore:
         conv_id: str,
         merchant_id: str | None,
         trigger_id: str | None,
+        customer_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         first_message: dict[str, Any] | None = None,
     ) -> None:
@@ -185,17 +193,17 @@ class ContextStore:
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO conversations
-                    (conv_id, merchant_id, trigger_id, history)
-                VALUES (?, ?, ?, ?)
+                    (conv_id, merchant_id, customer_id, trigger_id, history)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (conv_id, merchant_id, trigger_id, encoded),
+                (conv_id, merchant_id, customer_id, trigger_id, encoded),
             )
 
     def get_conversation(self, conv_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT conv_id, merchant_id, trigger_id, history
+                SELECT conv_id, merchant_id, customer_id, trigger_id, history
                 FROM conversations
                 WHERE conv_id = ?
                 """,
@@ -211,6 +219,7 @@ class ContextStore:
         return {
             "conv_id": row["conv_id"],
             "merchant_id": row["merchant_id"],
+            "customer_id": row["customer_id"],
             "trigger_id": row["trigger_id"],
             "history": history,
             "metadata": metadata,
@@ -221,11 +230,12 @@ class ContextStore:
         conv_id: str,
         entry: dict[str, Any],
         merchant_id: str | None = None,
+        customer_id: str | None = None,
         trigger_id: str | None = None,
     ) -> None:
         with self._lock, self._conn:
             row = self._conn.execute(
-                "SELECT history, merchant_id, trigger_id FROM conversations WHERE conv_id = ?",
+                "SELECT history, merchant_id, customer_id, trigger_id FROM conversations WHERE conv_id = ?",
                 (conv_id,),
             ).fetchone()
             if row is None:
@@ -233,12 +243,13 @@ class ContextStore:
                 self._conn.execute(
                     """
                     INSERT INTO conversations
-                        (conv_id, merchant_id, trigger_id, history)
-                    VALUES (?, ?, ?, ?)
+                        (conv_id, merchant_id, customer_id, trigger_id, history)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
                         conv_id,
                         merchant_id,
+                        customer_id,
                         trigger_id,
                         json.dumps(history, ensure_ascii=False, separators=(",", ":")),
                     ),
@@ -248,15 +259,17 @@ class ContextStore:
             history = json.loads(row["history"] or "[]")
             history.append(entry)
             next_merchant_id = merchant_id or row["merchant_id"]
+            next_customer_id = customer_id or row["customer_id"]
             next_trigger_id = trigger_id or row["trigger_id"]
             self._conn.execute(
                 """
                 UPDATE conversations
-                SET merchant_id = ?, trigger_id = ?, history = ?
+                SET merchant_id = ?, customer_id = ?, trigger_id = ?, history = ?
                 WHERE conv_id = ?
                 """,
                 (
                     next_merchant_id,
+                    next_customer_id,
                     next_trigger_id,
                     json.dumps(history, ensure_ascii=False, separators=(",", ":")),
                     conv_id,

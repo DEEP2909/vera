@@ -7,6 +7,8 @@ from typing import Any
 from openai import AzureOpenAI, OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from utils import deep_get as _deep_get
+
 
 DEFAULT_AZURE_ENDPOINT = "https://evidentis.openai.azure.com/"
 DEFAULT_AZURE_API_VERSION = "2024-12-01-preview"
@@ -17,6 +19,7 @@ COMPOSE_MODEL = (
     or "gpt-4.1"
 )
 URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+_llm_client: AzureOpenAI | OpenAI | None = None
 
 
 def has_llm_credentials() -> bool:
@@ -24,14 +27,19 @@ def has_llm_credentials() -> bool:
 
 
 def get_llm_client() -> AzureOpenAI | OpenAI:
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
     azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
     if azure_api_key:
-        return AzureOpenAI(
+        _llm_client = AzureOpenAI(
             api_key=azure_api_key,
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT),
         )
-    return OpenAI()
+    else:
+        _llm_client = OpenAI()
+    return _llm_client
 
 
 TRIGGER_ROUTE_MAP = {
@@ -384,23 +392,6 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _deep_get(obj: dict[str, Any] | None, *paths: str) -> Any:
-    if not obj:
-        return None
-    for path in paths:
-        current: Any = obj
-        ok = True
-        for part in path.split("."):
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                ok = False
-                break
-        if ok and current not in (None, "", []):
-            return current
-    return None
-
-
 def _fmt_percent(value: Any) -> str | None:
     if value is None:
         return None
@@ -459,7 +450,7 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
 
 def _first_offer(merchant: dict[str, Any] | None, category: dict[str, Any] | None) -> str | None:
     offer_sources = [
-        _deep_get(merchant, "active_offers", "offers.active", "offers", "campaigns.active_offers"),
+        _deep_get(merchant, "active_offers", "offers", "offers.active", "campaigns.active_offers"),
         _deep_get(category, "offer_catalog", "offers", "recommended_offers"),
     ]
     for offers in offer_sources:
@@ -522,8 +513,15 @@ def _first_slot(*contexts: dict[str, Any] | None) -> tuple[str | None, str | Non
 
 def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any] | None) -> str | None:
     digest_sources = [
-        _deep_get(trigger, "digest_item", "top_digest_item", "research_item"),
-        _deep_get(category, "digest_items", "research_digest.items", "research.items"),
+        _deep_get(
+            trigger,
+            "payload.top_item",
+            "top_item",
+            "digest_item",
+            "top_digest_item",
+            "research_item",
+        ),
+        _deep_get(category, "digest", "digest_items", "research_digest.items", "research.items"),
     ]
     for source in digest_sources:
         for item in _as_list(source):
@@ -625,6 +623,7 @@ def extract_key_facts(
     )
     peer_ctr = _deep_get(
         category,
+        "peer_stats.avg_ctr",
         "peer_stats.ctr",
         "benchmarks.ctr",
         "peer.ctr",
@@ -635,6 +634,27 @@ def extract_key_facts(
         p_ctr = _fmt_percent(peer_ctr)
         if m_ctr and p_ctr:
             facts.append(f"CTR gap: merchant {m_ctr} vs peer {p_ctr}")
+
+    avg_rating = _deep_get(category, "peer_stats.avg_rating")
+    avg_reviews = _deep_get(category, "peer_stats.avg_reviews")
+    merchant_rating = _deep_get(
+        merchant,
+        "performance.rating",
+        "metrics.rating",
+        "google_profile.rating",
+        "rating",
+    )
+    merchant_reviews = _deep_get(
+        merchant,
+        "performance.review_count",
+        "metrics.review_count",
+        "google_profile.review_count",
+        "reviews_count",
+    )
+    if merchant_rating and avg_rating:
+        facts.append(f"Rating: merchant {merchant_rating} vs peer avg {avg_rating}")
+    if merchant_reviews and avg_reviews:
+        facts.append(f"Reviews: merchant {merchant_reviews} vs peer avg {avg_reviews}")
 
     lapsed = _deep_get(
         trigger,
@@ -647,6 +667,20 @@ def extract_key_facts(
     if lapsed:
         noun = "patients" if "dent" in json.dumps(category or {}).lower() else "customers"
         facts.append(f"Lapsed {noun}: {lapsed} lapsed >{days} days")
+
+    lapsed_agg = _deep_get(merchant, "customer_aggregate.lapsed_180d_plus")
+    if lapsed_agg:
+        facts.append(f"Lapsed customers: {lapsed_agg} lapsed >180 days")
+
+    high_risk = _deep_get(merchant, "customer_aggregate.high_risk_adult_count")
+    if high_risk:
+        facts.append(f"High-risk adult patients: {high_risk}")
+
+    retention = _deep_get(merchant, "customer_aggregate.retention_6mo_pct")
+    if retention:
+        pct = _fmt_percent(retention)
+        if pct:
+            facts.append(f"6-month retention: {pct}")
 
     digest = _extract_digest_item(category, trigger)
     if digest:
@@ -884,7 +918,8 @@ def _validation_errors(result: dict[str, Any], category: dict[str, Any]) -> list
         errors.append("url_in_body")
     body_l = body.lower()
     for word in _taboo_words(category):
-        if word.lower() in body_l:
+        pattern = r"\b" + re.escape(word.lower()) + r"\b"
+        if re.search(pattern, body_l):
             errors.append(f"taboo_word:{word}")
     if result.get("send_as") not in {"vera", "merchant_on_behalf"}:
         errors.append("invalid_send_as")
@@ -925,7 +960,7 @@ def _final_cleanup(
     body = str(result.get("body") or "").strip()
     body = URL_RE.sub("", body).strip()
     for word in _taboo_words(category):
-        body = re.sub(re.escape(word), "", body, flags=re.IGNORECASE).strip()
+        body = re.sub(r"\b" + re.escape(word) + r"\b", "", body, flags=re.IGNORECASE).strip()
     if len(body) > 320:
         body = body[:317].rstrip() + "..."
 

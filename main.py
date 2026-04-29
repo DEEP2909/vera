@@ -9,14 +9,14 @@ from time import monotonic
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from composer import COMPOSE_MODEL, DEFAULT_AZURE_ENDPOINT, compose
-from composer import _deep_get as composer_deep_get
+from composer import COMPOSE_MODEL, compose
 from multi_turn import CLASSIFY_MODEL, handle_reply
 from store import ContextStore
+from utils import deep_get
 
 
 load_dotenv()
@@ -59,7 +59,7 @@ def ack_id(scope: str, context_id: str, version: int) -> str:
 
 def _candidate_id(payload: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
-        value = composer_deep_get(payload, key)
+        value = deep_get(payload, key)
         if value not in (None, "", []):
             return str(value)
     return None
@@ -184,8 +184,8 @@ def _merchant_matches_category(merchant: dict[str, Any], category_id: str | None
         return True
     wanted = _normalize_category_id(category_id)
     candidates = [
-        composer_deep_get(merchant, "category_id", "category_slug", "category", "business_category"),
-        composer_deep_get(merchant, "identity.category_id", "identity.category_slug", "identity.category"),
+        deep_get(merchant, "category_id", "category_slug", "category", "business_category"),
+        deep_get(merchant, "identity.category_id", "identity.category_slug", "identity.category"),
     ]
     return any(_normalize_category_id(candidate) == wanted for candidate in candidates if candidate)
 
@@ -334,6 +334,7 @@ def tick(request: TickRequest):
                 conversation_id,
                 merchant_id,
                 trigger_id,
+                customer_id=customer_id,
                 metadata={
                     "merchant_id": merchant_id,
                     "trigger_id": trigger_id,
@@ -366,10 +367,8 @@ def tick(request: TickRequest):
                     "send_as": send_as,
                     "trigger_id": trigger_id,
                     "template_name": route,
-                    "template_params": {
-                        "route": route,
-                        "key_facts": composed.get("key_facts", []),
-                    },
+                    "template_params": [route]
+                    + [str(fact) for fact in composed.get("key_facts", [])[:3]],
                     "body": body,
                     "cta": cta,
                     "suppression_key": suppression_key,
@@ -414,7 +413,7 @@ def metadata():
             "before generation, validate hard WhatsApp constraints, persist "
             "contexts/suppressions/conversations in SQLite, and use multi-turn "
             "intent handling for replies. Azure OpenAI is used when "
-            f"AZURE_OPENAI_API_KEY is configured; default endpoint is {DEFAULT_AZURE_ENDPOINT}."
+            "AZURE_OPENAI_API_KEY is configured."
         ),
         "contact_email": os.getenv("CONTACT_EMAIL", "team@example.com"),
         "version": "1.0.0",

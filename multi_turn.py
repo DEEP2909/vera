@@ -7,7 +7,6 @@ from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from composer import (
-    _deep_get,
     _first_offer,
     _json_compact,
     extract_key_facts,
@@ -16,6 +15,7 @@ from composer import (
     route_for_trigger,
 )
 from store import ContextStore
+from utils import deep_get as _deep_get
 
 
 CLASSIFY_MODEL = (
@@ -426,6 +426,7 @@ def handle_reply(
             conversation_id,
             merchant_id,
             None,
+            customer_id=customer_id,
             metadata={
                 "merchant_id": merchant_id,
                 "customer_id": customer_id,
@@ -436,10 +437,15 @@ def handle_reply(
         conv = store.get_conversation(conversation_id)
 
     history = list((conv or {}).get("history") or [])
+    effective_customer_id = (
+        customer_id
+        or (conv or {}).get("customer_id")
+        or (conv or {}).get("metadata", {}).get("customer_id")
+    )
     merchant = store.get("merchant", merchant_id) or {}
     trigger = _get_trigger(store, conv)
     category = _category_from_store(store, merchant, trigger)
-    customer = store.get("customer", customer_id) if customer_id else None
+    customer = store.get("customer", effective_customer_id) if effective_customer_id else None
     language = detect_reply_language(message)
     intent = classify_intent(message, language)
 
@@ -455,6 +461,7 @@ def handle_reply(
         conversation_id,
         incoming,
         merchant_id=merchant_id,
+        customer_id=effective_customer_id,
         trigger_id=(conv or {}).get("trigger_id"),
     )
     history.append(incoming)

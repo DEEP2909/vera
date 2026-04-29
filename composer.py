@@ -21,6 +21,14 @@ COMPOSE_MODEL = (
     or "gpt-4.1"
 )
 URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+_VOLATILE_TRIGGER_HASH_FIELDS = {
+    "delivered_at",
+    "received_at",
+    "created_at",
+    "updated_at",
+    "timestamp",
+    "ts",
+}
 _llm_client: AzureOpenAI | OpenAI | None = None
 _llm_lock = threading.Lock()
 
@@ -1221,8 +1229,9 @@ def _suppression_key(
     )
     trigger_id = trigger.get("trigger_id") or trigger.get("id")
     if not trigger_id:
+        stable_trigger = _stable_trigger_for_hash(trigger)
         encoded_trigger = json.dumps(
-            trigger,
+            stable_trigger,
             sort_keys=True,
             ensure_ascii=False,
             default=str,
@@ -1233,6 +1242,24 @@ def _suppression_key(
     raw = f"{merchant_id}:{customer_id}:{trigger_id}:{route}:{date_key}"
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     return f"vera:{merchant_id}:{customer_id}:{route}:{digest}"
+
+
+def _stable_trigger_for_hash(value: Any) -> Any:
+    if isinstance(value, dict):
+        stable: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text.lower() in _VOLATILE_TRIGGER_HASH_FIELDS:
+                continue
+            stable[key_text] = _stable_trigger_for_hash(item)
+        return stable
+    if isinstance(value, list):
+        return [_stable_trigger_for_hash(item) for item in value]
+    if isinstance(value, tuple):
+        return [_stable_trigger_for_hash(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def compose(

@@ -448,7 +448,8 @@ def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
             actions.append(_build_tick_action(request, candidate, composed))
         except Exception:
             STORE.clear_suppression(suppression_key)
-            STORE.clear_suppression(candidate["pre_key"])
+            if candidate["pre_key"] != suppression_key:
+                STORE.clear_suppression(candidate["pre_key"])
             continue
     return actions
 

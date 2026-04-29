@@ -422,9 +422,10 @@ def compose_reply(
             )
             body = _shorten(str(result.get("body") or ""))
             if body:
+                cta = _shorten(str(result.get("cta") or "Reply YES"), 80)
                 return {
                     "body": body,
-                    "cta": str(result.get("cta") or "Reply YES"),
+                    "cta": cta,
                     "rationale": str(result.get("rationale") or "LLM reply from context."),
                 }
         except Exception:
@@ -490,7 +491,7 @@ def handle_reply(
 
     if intent == "auto_reply":
         if turn_number <= 2:
-            name = _merchant_name(merchant)
+            name = _shorten(_merchant_name(merchant), 40)
             body = _shorten(
                 f"Hi, can the owner/manager see this? {name}, I have one 5-min Google profile task ready from today's signal. Reply YES and I'll do it."
             )

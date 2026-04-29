@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -300,8 +301,7 @@ def upsert_context(request: ContextRequest):
     }
 
 
-@app.post("/v1/tick")
-def tick(request: TickRequest):
+def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for available_id in request.available_triggers:
         if len(actions) >= 5:
@@ -376,6 +376,13 @@ def tick(request: TickRequest):
                     "rationale": composed.get("rationale", ""),
                 }
             )
+    return actions
+
+
+@app.post("/v1/tick")
+async def tick(request: TickRequest):
+    loop = asyncio.get_running_loop()
+    actions = await loop.run_in_executor(None, _tick_sync, request)
     return {"actions": actions}
 
 

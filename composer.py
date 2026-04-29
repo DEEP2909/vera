@@ -517,7 +517,7 @@ def _first_offer(
     trigger_keywords = {
         token
         for token in re.split(r"[^a-z0-9₹]+", trigger_text)
-        if len(token) >= 4 and token not in {"true", "false", "null", "kind", "payload"}
+        if len(token) >= 3 and token not in {"true", "false", "null", "kind", "payload"}
     }
     candidates: list[tuple[int, str]] = []
     for offers in offer_sources:
@@ -612,12 +612,12 @@ def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any
                 parts = []
                 if source_name:
                     parts.append(str(source_name))
+                if stat:
+                    parts.append(str(stat))
                 if title:
                     parts.append(str(title))
                 if sample:
                     parts.append(f"n={sample}")
-                if stat:
-                    parts.append(str(stat))
                 if page:
                     parts.append(f"p.{page}")
                 if parts:
@@ -1066,8 +1066,23 @@ def _final_cleanup(
     return clean
 
 
+def _hard_safe_result(result: dict[str, Any], trigger: dict[str, Any]) -> dict[str, Any]:
+    send_as = "merchant_on_behalf" if route_for_trigger(trigger) == "recall" else "vera"
+    cta = "Reply 1 or 2" if send_as == "merchant_on_behalf" else "Reply YES"
+    return {
+        "body": "I found one specific signal in your context. Want me to draft the message?",
+        "cta": cta,
+        "send_as": send_as,
+        "suppression_key": str(result.get("suppression_key") or ""),
+        "rationale": "Returned hard-safe fallback after validation cleanup still failed.",
+    }
+
+
 def validate_and_fix(
-    result: dict[str, Any], category: dict[str, Any], trigger: dict[str, Any]
+    result: dict[str, Any],
+    category: dict[str, Any],
+    trigger: dict[str, Any],
+    fallback_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     best = result
     for _ in range(2):
@@ -1078,7 +1093,18 @@ def validate_and_fix(
             best = _repair_result(best, errors)
         except Exception:
             break
-    return _final_cleanup(best, category, trigger)
+    cleaned = _final_cleanup(best, category, trigger)
+    if not _validation_errors(cleaned, category):
+        return cleaned
+    if fallback_result:
+        fallback_cleaned = _final_cleanup(fallback_result, category, trigger)
+        if not _validation_errors(fallback_cleaned, category):
+            return fallback_cleaned
+    hard_cleaned = _final_cleanup(_hard_safe_result(best, trigger), category, trigger)
+    if _validation_errors(hard_cleaned, category):
+        hard_cleaned["body"] = "Reply YES to continue."
+        hard_cleaned["cta"] = "Reply YES"
+    return hard_cleaned
 
 
 def _first_fact_with(patterns: list[str], facts: list[str]) -> str | None:
@@ -1210,11 +1236,12 @@ def compose(
     route = route_for_trigger(trigger)
     key_facts = extract_key_facts(category, merchant, trigger, customer)
     system_prompt, user_prompt = build_prompts(route, category, merchant, trigger, customer, key_facts)
+    fallback_result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
 
     try:
         result = _chat_json(COMPOSE_MODEL, system_prompt, user_prompt)
     except Exception as exc:
-        result = _fallback_message(route, category, merchant, trigger, customer, key_facts)
+        result = dict(fallback_result)
         result["rationale"] += f" OpenAI unavailable or failed: {type(exc).__name__}."
 
     result["_system_prompt"] = system_prompt
@@ -1224,7 +1251,7 @@ def compose(
     if not result.get("suppression_key"):
         result["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
 
-    validated = validate_and_fix(result, category, trigger)
+    validated = validate_and_fix(result, category, trigger, fallback_result=fallback_result)
     if not validated.get("suppression_key"):
         validated["suppression_key"] = _suppression_key(merchant, trigger, customer, route)
     validated["route"] = route

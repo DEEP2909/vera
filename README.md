@@ -21,6 +21,14 @@ Vera combines four layers of context:
 - Intent classification: Azure OpenAI deployment `gpt-4.1-mini`, temperature `0`, JSON response format.
 - Retries: `tenacity` exponential backoff, up to 3 attempts.
 
+## Design Decisions
+
+Vera uses GPT-4.1 for message composition because the scoring rubric rewards grounded synthesis across category, merchant, trigger, and customer context rather than generic copywriting. GPT-4.1-mini is reserved for reply intent classification, where the output space is small and latency matters more than prose quality.
+
+SQLite is used instead of Redis or an external service so the bot stays self-contained for Railway/Render deployment and survives restarts without extra infrastructure. The context store keeps versioned contexts, suppression keys with a TTL, and capped conversation history; this is enough for the judge workload while keeping operational setup simple.
+
+The main tradeoff is determinism versus richness. The prompt includes full compact context plus extracted `KEY FACTS`, and the LLM is asked for a polished message at temperature `0`; if the LLM fails or violates hard constraints, deterministic fallbacks return valid JSON with real context facts rather than timing out or fabricating details.
+
 ## Azure OpenAI
 
 The app uses the official OpenAI Python SDK's Azure client when `AZURE_OPENAI_API_KEY` is set.

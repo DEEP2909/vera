@@ -262,6 +262,7 @@ class ContextStore:
             ).fetchone()
             if row is None:
                 history = [entry]
+                history = history[-20:]
                 self._conn.execute(
                     """
                     INSERT INTO conversations
@@ -280,6 +281,7 @@ class ContextStore:
 
             history = json.loads(row["history"] or "[]")
             history.append(entry)
+            history = history[-20:]
             next_merchant_id = merchant_id or row["merchant_id"]
             next_customer_id = customer_id or row["customer_id"]
             next_trigger_id = trigger_id or row["trigger_id"]

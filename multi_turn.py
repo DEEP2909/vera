@@ -169,6 +169,13 @@ def _merchant_name(merchant: dict[str, Any] | None) -> str:
     )
 
 
+def _customer_name(customer: dict[str, Any] | None) -> str:
+    value = _deep_get(customer, "first_name", "name", "profile.first_name", "profile.name")
+    if not value:
+        return "there"
+    return str(value).split()[0]
+
+
 def _business_name(merchant: dict[str, Any] | None) -> str:
     return str(
         _deep_get(merchant, "business_name", "identity.business_name", "name", "merchant_name")
@@ -341,21 +348,32 @@ def _fallback_reply(
     merchant: dict[str, Any],
     trigger: dict[str, Any],
     category: dict[str, Any],
+    customer: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     name = _merchant_name(merchant)
+    customer_first = _customer_name(customer)
     business = _business_name(merchant)
     offer = _first_offer(merchant, category) or "your current offer"
-    facts = extract_key_facts(category, merchant, trigger)
+    facts = extract_key_facts(category, merchant, trigger, customer)
     fact = facts[0] if facts else "your latest profile signal"
     last_hook = _last_assistant_body(history)
+    route = route_for_trigger(trigger)
 
     if intent in {"accept", "enthusiastic_accept"}:
-        body = (
-            f"Done, {name}. Draft ready for {business}: '{offer} is live today - "
-            "message us to book.' Want me to make it a Google post too?"
-        )
-        cta = "Reply POST"
-        rationale = "Accepted request; reported a completed draft instead of re-selling."
+        if route == "recall" and customer:
+            body = (
+                f"Done, {name}. Recall draft for {customer_first}: '{offer} is due; "
+                "reply 1 or 2 for the available slot.' Want me to send it?"
+            )
+            cta = "Reply SEND"
+            rationale = "Accepted recall flow; drafted a customer-specific message."
+        else:
+            body = (
+                f"Done, {name}. Draft ready for {business}: '{offer} is live today - "
+                "message us to book.' Want me to make it a Google post too?"
+            )
+            cta = "Reply POST"
+            rationale = "Accepted request; reported a completed draft instead of re-selling."
     elif intent == "join_intent":
         body = (
             f"Great, {name}. You're in. Send me one offer or service for this week "
@@ -407,7 +425,7 @@ def compose_reply(
                 }
         except Exception:
             pass
-    return _fallback_reply(intent, message, language, history, merchant, trigger, category)
+    return _fallback_reply(intent, message, language, history, merchant, trigger, category, customer)
 
 
 def handle_reply(

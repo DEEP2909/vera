@@ -59,7 +59,11 @@ class ContextStore:
                 for row in self._conn.execute("PRAGMA table_info(conversations)").fetchall()
             }
             if "customer_id" not in columns:
-                self._conn.execute("ALTER TABLE conversations ADD COLUMN customer_id TEXT")
+                try:
+                    self._conn.execute("ALTER TABLE conversations ADD COLUMN customer_id TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     @staticmethod
     def _context_key(scope: str, context_id: str) -> str:

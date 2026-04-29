@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from typing import Any
 
 from openai import AzureOpenAI, OpenAI
@@ -20,6 +21,7 @@ COMPOSE_MODEL = (
 )
 URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 _llm_client: AzureOpenAI | OpenAI | None = None
+_llm_lock = threading.Lock()
 
 
 def has_llm_credentials() -> bool:
@@ -30,15 +32,18 @@ def get_llm_client() -> AzureOpenAI | OpenAI:
     global _llm_client
     if _llm_client is not None:
         return _llm_client
-    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    if azure_api_key:
-        _llm_client = AzureOpenAI(
-            api_key=azure_api_key,
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT),
-        )
-    else:
-        _llm_client = OpenAI()
+    with _llm_lock:
+        if _llm_client is not None:
+            return _llm_client
+        azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        if azure_api_key:
+            _llm_client = AzureOpenAI(
+                api_key=azure_api_key,
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_AZURE_API_VERSION),
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_AZURE_ENDPOINT),
+            )
+        else:
+            _llm_client = OpenAI()
     return _llm_client
 
 
@@ -639,9 +644,11 @@ def extract_key_facts(
     avg_reviews = _deep_get(category, "peer_stats.avg_reviews")
     merchant_rating = _deep_get(
         merchant,
+        "performance.google_rating",
         "performance.rating",
         "metrics.rating",
         "google_profile.rating",
+        "identity.rating",
         "rating",
     )
     merchant_reviews = _deep_get(

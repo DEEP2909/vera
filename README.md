@@ -29,13 +29,14 @@ The app uses the official OpenAI Python SDK's Azure client when `AZURE_OPENAI_AP
 AZURE_OPENAI_API_KEY=your_azure_openai_key_here
 AZURE_OPENAI_ENDPOINT=https://evidentis.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
+# Azure uses deployment names here, not necessarily the base model names.
 AZURE_OPENAI_COMPOSE_DEPLOYMENT=gpt-4.1
 AZURE_OPENAI_CLASSIFY_DEPLOYMENT=gpt-4.1-mini
 AZURE_OPENAI_REPLY_DEPLOYMENT=gpt-4.1
 OPENAI_REPLY_MODEL=gpt-4.1
 ```
 
-For Azure OpenAI, the `model` parameter is the deployment name, so set the deployment variables to match the names in your Azure resource if they differ.
+For Azure OpenAI, the `model` parameter is the deployment name. If your Azure portal deployment is named `my-gpt4`, set `AZURE_OPENAI_COMPOSE_DEPLOYMENT=my-gpt4` even if the underlying model is GPT-4.1.
 
 ## Run Locally
 

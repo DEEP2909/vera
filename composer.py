@@ -1369,7 +1369,7 @@ def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int
     client = get_llm_client()
     response = client.chat.completions.create(
         model=model,
-        temperature=0.2,
+        temperature=0.6,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},

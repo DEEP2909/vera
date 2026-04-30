@@ -1321,29 +1321,48 @@ Category voice:
 {_voice_summary(category)}
 """.strip()
 
+    # Pick top facts most relevant for this route
+    _route_fact_keywords: dict[str, list[str]] = {
+        "research": ["digest", "supply", "regulation", "lapsed", "high-risk", "chronic"],
+        "recall": ["customer timing", "available slot", "active offers", "service due", "refill"],
+        "perf_dip": ["performance dip", "ctr gap", "view trends", "calls", "leads"],
+        "perf_spike": ["performance spike", "view trends", "ctr gap", "active offers"],
+        "festival": ["festival", "event", "active offers", "seasonal"],
+        "milestone": ["milestone", "reviews", "rating"],
+        "reactivation": ["renewal due", "winback signal", "dormant signal", "profile signal", "content signal"],
+        "review_insight": ["review theme"],
+        "competitive": ["competitor signal", "rating", "active offers"],
+        "curious_ask": ["planning intent", "ask due", "active offers", "view trends"],
+        "content_nudge": ["content signal", "profile signal", "seasonal", "ctr gap", "active offers"],
+    }
+    priority_kws = _route_fact_keywords.get(route, [])
+    top_facts = [f for f in key_facts if any(kw in f.lower() for kw in priority_kws)][:4]
+    if not top_facts:
+        top_facts = key_facts[:4]
+    top_fact_block = "\n".join(f"- {fact}" for fact in top_facts)
+    best_example = few_shots[0] if few_shots else {}
+    owner_name = _merchant_name(merchant)
+    lang_str = ", ".join(_language_values(category, merchant, customer)) or "en"
+    trigger_payload_str = json.dumps(trigger.get("payload", {}), ensure_ascii=False)[:400]
+    locality_str = _city_locality(merchant)
+
     user_prompt = f"""
-KEY FACTS:
+MERCHANT: {owner_name} | {_business_name(merchant)}{" | " + locality_str if locality_str else ""}
+TRIGGER: {trigger.get("kind", "unknown")} — payload: {trigger_payload_str}
+LANGUAGE: {lang_str}
+
+PRIORITY FACTS — include ≥2 of these VERBATIM in body:
+{top_fact_block}
+
+ALL KEY FACTS:
 {key_fact_block}
 
-FEW-SHOT EXAMPLES FOR THIS ROUTE:
-{_json_compact(few_shots, 2500)}
+BEST EXAMPLE FOR THIS ROUTE:
+{_json_compact(best_example, 700)}
 
-CATEGORY CONTEXT:
-{_json_compact(category)}
-
-MERCHANT CONTEXT:
-{_json_compact(merchant)}
-
-TRIGGER CONTEXT:
-{_json_compact(trigger)}
-
-CUSTOMER CONTEXT:
-{_json_compact(customer)}
-
-Compose the WhatsApp message now. Keep it specific to the merchant and trigger.
+Compose now. Body MUST start with "{owner_name}," and quote ≥2 PRIORITY FACTS verbatim.
 """.strip()
     return system_prompt, user_prompt
-
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
 def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int = 700) -> dict[str, Any]:

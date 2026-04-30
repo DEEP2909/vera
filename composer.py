@@ -1311,12 +1311,21 @@ Hard constraints:
 - If language includes "hi", prefer one natural Hindi/Hinglish phrase.
 
 Scoring guidance (all 5 dimensions matter equally):
-1. Specificity: Quote exact merchant name, numbers, percentages, dates from KEY FACTS — never paraphrase data.
-2. Category Fit: Use category-appropriate vocabulary and tone (clinical for dentists/pharmacies, vibrant/personal for salons, data-driven for restaurants/gyms).
-3. Merchant Fit: Explicitly reference THIS merchant's business name, locality, or active offer in the body — the message must feel written for them, not a template.
-4. Trigger Relevance: State clearly WHY you are messaging NOW using the trigger signal; the reason must be obvious.
-5. Engagement: End with a specific, time-sensitive CTA that creates urgency or curiosity; avoid generic "Reply YES" when a richer CTA fits.
-
+1. Specificity: Use exact numbers/percentages/dates from KEY FACTS verbatim. Never round or soften: "2,100-patient trial" not "a study"; "50% drop" not "big drop"; "₹4999" not "a fee".
+2. Category Fit: STRICTLY match voice like:
+   - dentist/dental: always "Dr. [name]" prefix; cite journal (JIDA/IDA/DCI); clinical peer tone; no hype
+   - salon/beauty: warm personal ("your clients", "your studio"); mention specific service + price; friendly
+   - gym/yoga: coaching language ("your members", "your athletes"); motivational, goal-focused
+   - restaurant/cafe: operator-peer ("your kitchen", "your regulars"); direct ROI framing
+   - pharmacy: precision + compliance ("CDSCO", "DCI", "batch"); patient-safety first
+3. Merchant Fit: Body MUST include ALL THREE: (a) owner first name, (b) business name OR locality, (c) exact offer with price OR exact metric number.
+4. Trigger Relevance: First sentence must name the trigger signal directly. Make it obvious why THIS message is sent TODAY.
+5. Engagement: MUST end with ONE of these high-scoring patterns:
+   - Loss aversion: "You are losing [X calls/leads/customers] this week — I can fix this in 5 min. Reply YES."
+   - Social proof: "[N] [category] merchants in [locality] did [X] after seeing this signal."
+   - Curiosity close: "I found one specific thing in your [data/profile/reviews] that explains this — want to see?"
+   Never use standalone "Reply YES" or "Say GO" — always attach a specific loss or reason.
+   
 Category voice:
 {_voice_summary(category)}
 """.strip()
@@ -1360,8 +1369,7 @@ ALL KEY FACTS:
 BEST EXAMPLE FOR THIS ROUTE:
 {_json_compact(best_example, 700)}
 
-Compose now. Body MUST start with "{owner_name}," and quote ≥2 PRIORITY FACTS verbatim.
-""".strip()
+Compose now. Body MUST start with "{owner_name}," and weave exact numbers/stats from ≥2 PRIORITY FACTS into natural sentences. Do NOT copy label names like "Performance dip:" or "Renewal due:" — just the actual data value.""".strip()
     return system_prompt, user_prompt
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
@@ -1369,7 +1377,7 @@ def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int
     client = get_llm_client()
     response = client.chat.completions.create(
         model=model,
-        temperature=0.3,
+        temperature=0,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},

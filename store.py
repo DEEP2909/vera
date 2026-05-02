@@ -111,13 +111,18 @@ class ContextStore:
 
         key = self._context_key(scope, context_id)
         encoded = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
+        strict_versions = os.getenv("VERA_STRICT_CONTEXT_VERSION", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         with self._lock, self._conn:
             row = self._conn.execute(
                 "SELECT version FROM contexts WHERE key = ?", (key,)
             ).fetchone()
             if row is not None:
                 current_version = int(row["version"])
-                if version <= current_version:
+                if strict_versions and version < current_version:
                     return False, current_version
 
             self._conn.execute(

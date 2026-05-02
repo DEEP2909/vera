@@ -63,6 +63,11 @@ HINDI_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 INDIC_SCRIPT_RE = re.compile(r"[\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF]")
+OPT_OUT_RE = re.compile(
+    r"\b(stop|unsubscribe|opt out|opt-out|spam|do not|don't|dont|remove|block|report)\b|"
+    r"नहीं|नही|मत|बंद|स्पैम|स्टॉप",
+    re.IGNORECASE,
+)
 
 
 def _utc_now() -> str:
@@ -154,6 +159,8 @@ def _heuristic_intent(message: str) -> str:
 def classify_intent(message: str, languages: str) -> str:
     if is_auto_reply(message):
         return "auto_reply"
+    if OPT_OUT_RE.search(message or ""):
+        return "decline"
     if not has_llm_credentials():
         return _heuristic_intent(message)
     try:
@@ -604,6 +611,8 @@ def compose_reply(
     category: dict[str, Any],
     customer: dict[str, Any] | None,
 ) -> dict[str, str]:
+    if intent in {"accept", "enthusiastic_accept"}:
+        return _fallback_reply(intent, message, language, history, merchant, trigger, category, customer)
     if has_llm_credentials():
         try:
             result = _reply_with_llm(
@@ -663,7 +672,9 @@ def handle_reply(
     customer = store.get("customer", effective_customer_id) if effective_customer_id else None
     language = detect_reply_language(message)
     from_role_norm = (from_role or "merchant").strip().lower()
-    if from_role_norm == "customer":
+    if from_role_norm != "customer" and is_auto_reply(message):
+        intent = "auto_reply"
+    elif from_role_norm == "customer":
         intent = classify_customer_intent(message, language)
     else:
         intent = classify_intent(message, language)

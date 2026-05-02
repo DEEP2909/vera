@@ -340,6 +340,16 @@ app = FastAPI(title="Vera Merchant AI Assistant", version="1.0.0", lifespan=life
 
 
 @app.middleware("http")
+async def normalize_double_v1(request, call_next):
+    path = request.scope.get("path", "")
+    if path == "/v1/v1":
+        request.scope["path"] = "/v1"
+    elif path.startswith("/v1/v1/"):
+        request.scope["path"] = path[3:]
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def ensure_utf8_response(request, call_next):
     response = await call_next(request)
     content_type = response.headers.get("content-type", "")

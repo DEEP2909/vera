@@ -1642,7 +1642,7 @@ def _fallback_message(
         summary = str((digest or {}).get("summary") or "").strip()
         stat_match = re.search(r"\d+(?:\.\d+)?%", " ".join([title, summary, fact_cleaned]))
         stat = stat_match.group(0) if stat_match else ""
-        sample = (digest or {}).get("trial_n") or (digest or {}).get("sample_size") or (digest or {}).get("n"))
+        sample = (digest or {}).get("trial_n") or (digest or {}).get("sample_size") or (digest or {}).get("n")
         cohort = _first_fact_with(["high-risk", "lapsed", "chronic", "repeat customers"], facts)
         if "supply" in kind or "alert" in kind:
             batches = _deep_get(trigger, "payload.affected_batches")
@@ -1901,7 +1901,7 @@ def _fallback_message(
         summary = str((digest or {}).get("summary") or "").strip()
         stat_match = re.search(r"\d+(?:\.\d+)?%", " ".join([title, summary, _clean_fact_text(fact)]))
         stat = stat_match.group(0) if stat_match else ""
-        sample = (digest or {}).get("trial_n") or (digest or {}).get("sample_size") or (digest or {}).get("n"))
+        sample = (digest or {}).get("trial_n") or (digest or {}).get("sample_size") or (digest or {}).get("n")
         cohort = _first_fact_with(["high-risk", "lapsed", "chronic", "repeat customers"], facts)
         if "supply" in kind or "alert" in kind:
             batches = _deep_get(trigger, "payload.affected_batches")

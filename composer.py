@@ -30,6 +30,15 @@ _VOLATILE_TRIGGER_HASH_FIELDS = {
     "timestamp",
     "ts",
 }
+_PLACEHOLDER_NAME_TOKENS = {
+    "anonymous",
+    "unknown",
+    "walk-in",
+    "walk in",
+    "no profile",
+    "grandfather",
+    "test",
+}
 _llm_client: AzureOpenAI | OpenAI | None = None
 _llm_lock = threading.Lock()
 
@@ -527,12 +536,20 @@ def _customer_name(customer: dict[str, Any] | None) -> str:
         "profile.first_name",
         "profile.name",
     )
+    if value:
+        lowered = str(value).lower()
+        if any(token in lowered for token in _PLACEHOLDER_NAME_TOKENS):
+            value = None
     if not value:
         customer_id = _deep_get(customer, "customer_id", "id")
         if customer_id:
             parts = str(customer_id).split("_")
             if len(parts) >= 3 and parts[2]:
-                value = parts[2].title()
+                candidate = parts[2].title()
+                if any(token in candidate.lower() for token in _PLACEHOLDER_NAME_TOKENS):
+                    value = None
+                else:
+                    value = candidate
     if not value:
         return "there"
     parts = str(value).split()
@@ -551,6 +568,26 @@ def _business_name(merchant: dict[str, Any] | None) -> str:
         "name",
     )
     return str(value or "your business").strip()
+
+
+def _merchant_salutation(merchant: dict[str, Any] | None, category: dict[str, Any] | None) -> str:
+    slug = _category_slug(category, merchant)
+    first = _deep_get(
+        merchant,
+        "identity.owner_first_name",
+        "owner_first_name",
+        "owner_name",
+        "merchant_name",
+        "business_name",
+        "name",
+    )
+    if first:
+        first = str(first).strip().split()[0]
+        if "dent" in slug and not first.lower().startswith("dr"):
+            return f"Dr. {first}"
+        return first
+    business = _business_name(merchant)
+    return "" if business == "your business" else business
 
 
 def _first_offer(
@@ -604,7 +641,13 @@ def _first_offer(
                 candidates.append((score, label))
     if not candidates:
         return None
-    return max(candidates, key=lambda item: item[0])[1]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_label = candidates[0][1]
+    if best_label and any(label == best_label for _, label in candidates if "@" in label):
+        for _, label in candidates:
+            if "@" in label:
+                return label
+    return best_label
 
 
 def _first_slot(*contexts: dict[str, Any] | None) -> tuple[str | None, str | None]:
@@ -728,7 +771,10 @@ def _clean_fact_text(fact: str | None) -> str:
     )
     for prefix in prefixes:
         if text.lower().startswith(prefix.lower()):
-            return text[len(prefix) :].strip()
+            text = text[len(prefix) :].strip()
+            break
+    text = re.sub(r"\bGBP\b", "Google profile", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bCTR\b", "click rate", text, flags=re.IGNORECASE)
     return text
 
 
@@ -774,22 +820,9 @@ def _offer_for_route(
     trigger: dict[str, Any],
 ) -> str:
     offer = _first_offer(merchant, category, trigger)
-    slug = _category_slug(category, merchant)
     if offer:
         return offer
-    if route == "festival" and "restaurant" in slug:
-        return "Match-night Combo @ ₹399"
-    if "dent" in slug:
-        return "Free Consultation"
-    if "salon" in slug:
-        return "Hair Spa @ ₹499"
-    if "gym" in slug:
-        return "3 FREE Trial Classes"
-    if "pharmac" in slug:
-        return "Free Home Delivery > ₹499"
-    if "restaurant" in slug:
-        return "Weekday Lunch Thali @ ₹149"
-    return "your active offer"
+    return "your current offer"
 
 
 def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any] | None) -> str | None:
@@ -937,7 +970,7 @@ def extract_key_facts(
         m_ctr = _fmt_percent(merchant_ctr)
         p_ctr = _fmt_percent(peer_ctr)
         if m_ctr and p_ctr:
-            facts.append(f"CTR gap: merchant {m_ctr} vs peer {p_ctr}")
+            facts.append(f"Click rate gap: merchant {m_ctr} vs peer {p_ctr}")
 
     locality = _city_locality(merchant)
     if locality:
@@ -969,7 +1002,7 @@ def extract_key_facts(
 
     merchant_verified = _deep_get(merchant, "identity.verified", "google_profile.verified")
     if merchant_verified is False:
-        facts.append("Profile signal: GBP unverified")
+        facts.append("Profile signal: Google profile unverified")
 
     for metric in ("views", "calls", "directions", "leads"):
         snapshot = _metric_snapshot(merchant, category, metric)
@@ -1168,7 +1201,9 @@ def extract_key_facts(
 
     if _deep_get(trigger, "payload.verified") is False:
         uplift = _fmt_percent(_deep_get(trigger, "payload.estimated_uplift_pct"))
-        facts.append(f"Profile signal: GBP unverified" + (f"; estimated uplift {uplift}" if uplift else ""))
+        facts.append(
+            f"Profile signal: Google profile unverified" + (f"; estimated uplift {uplift}" if uplift else "")
+        )
 
     trends = _deep_get(trigger, "payload.trends")
     if isinstance(trends, list) and trends:
@@ -1293,8 +1328,17 @@ def build_prompts(
 ) -> tuple[str, str]:
     few_shots = FEW_SHOT_LIBRARY.get(route, FEW_SHOT_LIBRARY["generic"])
     key_fact_block = "\n".join(f"- {fact}" for fact in key_facts) or "- No numeric facts found"
+    salutation = _merchant_salutation(merchant, category)
+    business = _business_name(merchant)
+    location = _city_locality(merchant)
+    active_offers = [
+        offer.get("title")
+        for offer in _as_list(_deep_get(merchant, "offers"))
+        if isinstance(offer, dict)
+        and str(offer.get("status") or "").lower() in {"active", "running"}
+    ]
     system_prompt = f"""
-You are Vera, magicpin's AI assistant for Indian merchants on WhatsApp.
+    You are Vera, magicpin's AI assistant for Indian merchants on WhatsApp.
 
 Route: {route}
 Route-specific instruction: {ROUTE_INSTRUCTIONS.get(route, ROUTE_INSTRUCTIONS["generic"])}
@@ -1306,9 +1350,13 @@ Hard constraints:
 - Use exactly one CTA.
 - send_as must be "vera" or "merchant_on_behalf".
 - Use at least one KEY FACT verbatim or nearly verbatim in the body.
-- Do not fabricate numbers, dates, research citations, competitor names, offers, slots, prices, ratings, or peer stats.
-- Do not use taboo vocabulary from the category voice.
-- If language includes "hi", prefer one natural Hindi/Hinglish phrase.
+    - Do not fabricate numbers, dates, research citations, competitor names, offers, slots, prices, ratings, or peer stats.
+    - Do not use taboo vocabulary from the category voice.
+    - If language includes "hi", prefer one natural Hindi/Hinglish phrase.
+    - Open with the merchant name or business name (dentists use "Dr.").
+    - If there are active offers, include one; if none, ask for one instead of inventing.
+    - Avoid internal abbreviations (say "Google profile" instead of GBP).
+    - Prefer referencing locality/city when available.
 
 Scoring guidance (all 5 dimensions matter equally):
 1. Specificity: Use exact numbers/percentages/dates from KEY FACTS verbatim. Never round or soften: "2,100-patient trial" not "a study"; "50% drop" not "big drop"; "₹4999" not "a fee".
@@ -1326,9 +1374,14 @@ Scoring guidance (all 5 dimensions matter equally):
    - Curiosity close: "I found one specific thing in your [data/profile/reviews] that explains this — want to see?"
    Never use standalone "Reply YES" or "Say GO" — always attach a specific loss or reason.
    
-Category voice:
-{_voice_summary(category)}
-""".strip()
+    Category voice:
+    {_voice_summary(category)}
+    
+    Merchant anchor: {salutation or business}
+    Business name: {business}
+    Location: {location}
+    Active offers: {active_offers or "none"}
+    """.strip()
 
     # Pick top facts most relevant for this route
     _route_fact_keywords: dict[str, list[str]] = {
@@ -1350,13 +1403,13 @@ Category voice:
         top_facts = key_facts[:4]
     top_fact_block = "\n".join(f"- {fact}" for fact in top_facts)
     best_example = few_shots[0] if few_shots else {}
-    owner_name = _merchant_name(merchant)
+    owner_name = _merchant_salutation(merchant, category) or _merchant_name(merchant)
+    business_name = _business_name(merchant)
+    locality_str = _city_locality(merchant)
     lang_str = ", ".join(_language_values(category, merchant, customer)) or "en"
     trigger_payload_str = json.dumps(trigger.get("payload", {}), ensure_ascii=False)[:400]
-    locality_str = _city_locality(merchant)
-
     user_prompt = f"""
-MERCHANT: {owner_name} | {_business_name(merchant)}{" | " + locality_str if locality_str else ""}
+    MERCHANT: {owner_name} | {business_name}{" | " + locality_str if locality_str else ""}
 TRIGGER: {trigger.get("kind", "unknown")} — payload: {trigger_payload_str}
 LANGUAGE: {lang_str}
 
@@ -1369,7 +1422,7 @@ ALL KEY FACTS:
 BEST EXAMPLE FOR THIS ROUTE:
 {_json_compact(best_example, 700)}
 
-Compose now. Body MUST start with "{owner_name}," and weave exact numbers/stats from ≥2 PRIORITY FACTS into natural sentences. Do NOT copy label names like "Performance dip:" or "Renewal due:" — just the actual data value.""".strip()
+    Compose now. Body MUST start with "{owner_name}," and weave exact numbers/stats from ≥2 PRIORITY FACTS into natural sentences. Include business name or locality in the body. Do NOT copy label names like "Performance dip:" or "Renewal due:" — just the actual data value.""".strip()
     return system_prompt, user_prompt
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
@@ -1454,6 +1507,8 @@ def _final_cleanup(
     body = URL_RE.sub("", body).strip()
     for word in _taboo_words(category):
         body = re.sub(r"\b" + re.escape(word) + r"\b", "", body, flags=re.IGNORECASE).strip()
+    body = re.sub(r"\bGBP\b", "Google profile", body, flags=re.IGNORECASE)
+    body = re.sub(r"\bCTR\b", "click rate", body, flags=re.IGNORECASE)
     if len(body) > 320:
         body = body[:317].rstrip() + "..."
 
@@ -1539,7 +1594,7 @@ def _fallback_message(
     customer: dict[str, Any] | None,
     facts: list[str],
 ) -> dict[str, Any]:
-    name = _merchant_name(merchant)
+    name = _merchant_salutation(merchant, category) or _merchant_name(merchant)
     customer_first = _customer_name(customer)
     business = _business_name(merchant)
     offer = _offer_for_route(route, merchant, category, trigger)
@@ -1901,8 +1956,56 @@ def compose(
         result["suppression_key"] = canonical_key
 
     validated = validate_and_fix(result, category, trigger, fallback_result=safe_fallback_result)
+    validated = _enforce_personalization(validated, merchant, category)
+    validated = _enforce_offer_anchor(validated, merchant)
+    validated = _enforce_numeric_fact(validated, key_facts)
     if not validated.get("suppression_key"):
         validated["suppression_key"] = canonical_key
     validated["route"] = route
     validated["key_facts"] = key_facts
     return validated
+
+
+def _enforce_personalization(
+    result: dict[str, Any],
+    merchant: dict[str, Any],
+    category: dict[str, Any],
+) -> dict[str, Any]:
+    body = str(result.get("body") or "")
+    send_as = result.get("send_as")
+    if send_as == "merchant_on_behalf":
+        return result
+    salutation = _merchant_salutation(merchant, category)
+    business = _business_name(merchant)
+    body_lower = body.lower()
+    salutation_l = salutation.lower() if salutation else ""
+    business_l = business.lower() if business else ""
+    if salutation and salutation_l not in body_lower and business_l not in body_lower:
+        if re.match(r"^hi\b", body_lower):
+            body = re.sub(r"^hi\b\s*", f"Hi {salutation}, ", body, flags=re.IGNORECASE)
+        else:
+            body = f"{salutation}, {body}"
+    result["body"] = _body_with_limit(body)
+    return result
+
+
+def _enforce_numeric_fact(result: dict[str, Any], key_facts: list[str]) -> dict[str, Any]:
+    body = str(result.get("body") or "")
+    if re.search(r"\d", body):
+        return result
+    fact = _short_numeric_fact(key_facts)
+    if not fact:
+        return result
+    addition = f" ({fact})"
+    result["body"] = _body_with_limit(body + addition)
+    return result
+
+
+def _short_numeric_fact(key_facts: list[str]) -> str | None:
+    for fact in key_facts:
+        if not re.search(r"\d", fact):
+            continue
+        cleaned = _clean_fact_text(fact)
+        if cleaned and len(cleaned) <= 70:
+            return cleaned
+    return None

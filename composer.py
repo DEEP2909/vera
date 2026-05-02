@@ -1661,8 +1661,8 @@ def _fallback_message(
                 f"Want me to draft your SOP note + patient-safe wording?"
             )
         elif "cde" in kind:
-            credits = _deep_get(trigger, "payload.credits") or (digest or {}).get("credits"))
-            date = (digest or {}).get("date") or _deep_get(trigger, "payload.date"))
+            credits = _deep_get(trigger, "payload.credits") or (digest or {}).get("credits")
+            date = (digest or {}).get("date") or _deep_get(trigger, "payload.date")
             body = (
                 f"{name} at {business} in {location}: {source or 'IDA'} has a {credits or 2}-credit CDE on digital impressions"
                 f"{' on ' + str(date)[:10] if date else ''}. Want me to pull it + draft a Google post?"
@@ -1713,7 +1713,7 @@ def _fallback_message(
             )
         elif "lapsed" in kind:
             timing_text = _clean_fact_text(timing)
-            focus = _deep_get(trigger, "payload.previous_focus") or _deep_get(customer, "preferences.training_focus"))
+            focus = _deep_get(trigger, "payload.previous_focus") or _deep_get(customer, "preferences.training_focus")
             preferred = _humanize_label(_deep_get(customer, "preferences.preferred_slots"))
             comeback_offer = offer
             body = (
@@ -1748,7 +1748,7 @@ def _fallback_message(
             )
         cta = "Reply YES — fix the gap now"
     elif route == "perf_spike":
-        driver = _deep_get(trigger, "payload.likely_driver"))
+        driver = _deep_get(trigger, "payload.likely_driver")
         followup = "kids-yoga follow-up" if driver else offer
         metric = _deep_get(trigger, "payload.metric", "metric") or "calls"
         snapshot = _metric_snapshot(merchant, category, str(metric)) or _metric_snapshot(merchant, category, "calls")
@@ -1778,7 +1778,7 @@ def _fallback_message(
         event = _first_fact_with(["event"], facts)
         offer = offer or _active_offer_title(merchant) or "a festive offer"
         if event:
-            venue = _deep_get(trigger, "payload.venue"))
+            venue = _deep_get(trigger, "payload.venue")
             body = (
                 f"{name} at {business} in {location}: {_clean_fact_text(event)}"
                 f"{' at ' + str(venue) if venue else ''}. Push {offer} for home-watch orders in {location}? YES/STOP — capture the season."
@@ -1828,7 +1828,7 @@ def _fallback_message(
         cta = "Reply YES — protect your rating"
     elif route == "competitive":
         comp_fact = _first_fact_with(["competitor"], facts) or fact
-        their_offer = _deep_get(trigger, "payload.their_offer"))
+        their_offer = _deep_get(trigger, "payload.their_offer")
         body = (
             f"{name} at {business} in {location}: {_clean_fact_text(comp_fact)}"
             f"{'; they show ' + str(their_offer) if their_offer else ''}. "
@@ -1842,7 +1842,7 @@ def _fallback_message(
             topic = _clean_fact_text(planning).replace("_", " ")
             support_fact = (
                 _first_fact_with(["repeat customers", "trial-to-paid", "delivery share", "active offers"], facts)
-                or _metric_snapshot(merchant, category, "leads"))
+                or _metric_snapshot(merchant, category, "leads")
             )
             offer_bit = offer if offer != "your active offer" else ""
             body = (
@@ -1914,14 +1914,14 @@ def _fallback_message(
                 f"Want me to filter repeat-Rx customers and draft the recall WhatsApp?"
             )
         elif "regulation" in kind:
-            deadline = _deep_get(trigger, "payload.deadline_iso"))
+            deadline = _deep_get(trigger, "payload.deadline_iso")
             body = (
                 f"{name}, DCI update: IOPA dose limit changes by {deadline}; E-speed/RVG setup matters. "
                 f"Want me to draft your SOP note + patient-safe wording?"
             )
         elif "cde" in kind:
-            credits = _deep_get(trigger, "payload.credits") or (digest or {}).get("credits"))
-            date = (digest or {}).get("date") or _deep_get(trigger, "payload.date"))
+            credits = _deep_get(trigger, "payload.credits") or (digest or {}).get("credits")
+            date = (digest or {}).get("date") or _deep_get(trigger, "payload.date")
             body = (
                 f"{name}, {source or 'IDA'} has a {credits or 2}-credit CDE on digital impressions"
                 f"{' on ' + str(date)[:10] if date else ''}. Want me to pull it + draft a Google post?"
@@ -1974,7 +1974,7 @@ def _fallback_message(
             )
         elif "lapsed" in kind:
             timing_text = _clean_fact_text(timing)
-            focus = _deep_get(trigger, "payload.previous_focus") or _deep_get(customer, "preferences.training_focus"))
+            focus = _deep_get(trigger, "payload.previous_focus") or _deep_get(customer, "preferences.training_focus")
             preferred = _humanize_label(_deep_get(customer, "preferences.preferred_slots"))
             comeback_offer = offer
             body = (

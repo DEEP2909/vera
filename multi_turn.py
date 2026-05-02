@@ -98,7 +98,9 @@ def _classify_with_llm(message: str, languages: str) -> str:
                 "content": (
                     "Classify merchant message intent. Return JSON: {intent: string}. "
                     "Options: accept, decline, join_intent, question, auto_reply, "
-                    "clarification, enthusiastic_accept, soft_decline, neutral"
+                    "clarification, enthusiastic_accept, soft_decline, neutral. "
+                    "If the message asks about compliance/regulations/audits/X-ray/DCI, "
+                    "choose question, not join_intent."
                 ),
             },
             {
@@ -129,8 +131,6 @@ def _heuristic_intent(message: str) -> str:
     text = unicodedata.normalize("NFKC", (message or "").strip().lower())
     if is_auto_reply(text):
         return "auto_reply"
-    if re.search(r"\b(join|start|onboard|sign me|register|setup|set up|activate)\b|शुरू|जोड़|चालू", text):
-        return "join_intent"
     if re.search(
         r"\b(yes|yep|sure|go|do it|ok|okay|haan|ha|haanji|hanji|karo|kar do|proceed|please do)\b|हाँ|हां|जी|ठीक|करो|कर दो",
         text,
@@ -142,10 +142,12 @@ def _heuristic_intent(message: str) -> str:
         return "decline"
     if re.search(r"\b(later|baad|kal|not now|abhi nahi|busy)\b|बाद|कल|अभी नहीं|व्यस्त", text):
         return "soft_decline"
-    if "?" in text or re.search(r"\b(what|why|how|when|cost|price|kya|kaise|kitna|kab)\b|क्या|कैसे|कितना|कब|क्यों", text):
+    if "?" in text or re.search(r"\b(what|why|how|when|cost|price|kya|kaise|kitna|kab|compliance|audit|x-ray|xray|dci|regulation|license)\b|क्या|कैसे|कितना|कब|क्यों", text):
         return "question"
     if re.search(r"\b(which|mean|explain|clarify|samjhao|detail)\b|समझाओ|बताओ|विवरण", text):
         return "clarification"
+    if re.search(r"\b(join|start|onboard|sign me|register|setup|set up|activate)\b|शुरू|जोड़|चालू", text):
+        return "join_intent"
     return "neutral"
 
 
@@ -158,6 +160,155 @@ def classify_intent(message: str, languages: str) -> str:
         return _classify_with_llm(message, languages)
     except Exception:
         return _heuristic_intent(message)
+
+
+def _first_slot_from_context(*contexts: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    slots: list[Any] = []
+    for ctx in contexts:
+        slots.extend(
+            _deep_get(
+                ctx,
+                "available_slots",
+                "payload.available_slots",
+                "payload.next_session_options",
+                "schedule.available_slots",
+                "availability.slots",
+                "slots",
+            )
+            or []
+        )
+    labels: list[str] = []
+    for slot in slots:
+        if isinstance(slot, dict):
+            label = slot.get("label") or " ".join(
+                str(part) for part in [slot.get("day"), slot.get("date"), slot.get("time")] if part
+            )
+        else:
+            label = str(slot) if slot else ""
+        if label:
+            labels.append(label.strip())
+    return (labels[0] if labels else None), (labels[1] if len(labels) > 1 else None)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=4))
+def _classify_customer_with_llm(message: str, languages: str) -> str:
+    client = get_llm_client()
+    response = client.chat.completions.create(
+        model=CLASSIFY_MODEL,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Classify CUSTOMER message intent. Return JSON: {intent: string}. "
+                    "Options: booking_request, availability_question, pricing_question, "
+                    "confirmation, reschedule, decline, general_question, neutral."
+                ),
+            },
+            {"role": "user", "content": f"Message: {message!r}. Language context: {languages}"},
+        ],
+        max_tokens=64,
+    )
+    content = response.choices[0].message.content or "{}"
+    data = json.loads(content)
+    intent = str(data.get("intent") or "neutral").strip().lower()
+    allowed = {
+        "booking_request",
+        "availability_question",
+        "pricing_question",
+        "confirmation",
+        "reschedule",
+        "decline",
+        "general_question",
+        "neutral",
+    }
+    return intent if intent in allowed else "neutral"
+
+
+def _heuristic_customer_intent(message: str) -> str:
+    text = unicodedata.normalize("NFKC", (message or "").strip().lower())
+    if re.search(r"\b(book|booking|reserve|appointment|slot|schedule|confirm)\b|बुक|अपॉइंटमेंट|स्लॉट", text):
+        return "booking_request"
+    if re.search(r"\b(reschedule|change time|change slot|another time)\b|रीशेड्यूल|समय बदल", text):
+        return "reschedule"
+    if re.search(r"\b(price|cost|fee|charges|rate|kitna|₹|rs\.?\s*\d)\b|कीमत|चार्ज", text):
+        return "pricing_question"
+    if re.search(r"\b(available|availability|open|slots)\b|उपलब्ध|खाली", text):
+        return "availability_question"
+    if re.search(r"\b(yes|confirm|ok|okay|haan|ha)\b|हाँ|हां|ठीक", text):
+        return "confirmation"
+    if "?" in text:
+        return "general_question"
+    if re.search(r"\b(no|nope|stop|cancel|not interested)\b|नहीं|नही|मत|बंद", text):
+        return "decline"
+    return "neutral"
+
+
+def classify_customer_intent(message: str, languages: str) -> str:
+    if not has_llm_credentials():
+        return _heuristic_customer_intent(message)
+    try:
+        return _classify_customer_with_llm(message, languages)
+    except Exception:
+        return _heuristic_customer_intent(message)
+
+
+def compose_customer_reply(
+    intent: str,
+    message: str,
+    language: str,
+    merchant: dict[str, Any],
+    trigger: dict[str, Any],
+    category: dict[str, Any],
+    customer: dict[str, Any] | None,
+) -> dict[str, str]:
+    customer_first = _customer_name(customer)
+    business = _business_name(merchant)
+    offer = _first_offer(merchant, category, trigger) or "our current offer"
+    slot_a, slot_b = _first_slot_from_context(trigger, merchant)
+    facts = extract_key_facts(category, merchant, trigger, customer)
+    price_fact = _first_fact_with(["offer", "price", "₹"], facts)
+
+    if intent in {"booking_request", "confirmation"}:
+        if slot_a and slot_b:
+            body = (
+                f"Hi {customer_first}, {business} here. I can book you for {slot_a} or {slot_b}. "
+                "Reply 1 for first, 2 for second."
+            )
+            cta = "Reply 1 or 2"
+        else:
+            body = (
+                f"Hi {customer_first}, {business} here. I can book you—"
+                "please share your preferred day/time and a contact number."
+            )
+            cta = "Reply with day/time"
+    elif intent == "availability_question":
+        if slot_a and slot_b:
+            body = f"Hi {customer_first}, {business} here. उपलब्ध स्लॉट: {slot_a} या {slot_b}."
+            cta = "Reply 1 or 2"
+        else:
+            body = f"Hi {customer_first}, {business} here. Please share your preferred day/time."
+            cta = "Reply with day/time"
+    elif intent == "pricing_question":
+        detail = price_fact or offer
+        body = f"Hi {customer_first}, {business} here. {detail}. Want me to book a slot?"
+        cta = "Reply YES"
+    elif intent == "reschedule":
+        body = f"Hi {customer_first}, {business} here. No problem—share your new preferred time."
+        cta = "Reply with new time"
+    elif intent == "decline":
+        body = f"Thanks for letting us know, {customer_first}. If you need anything later, just message us."
+        cta = ""
+    else:
+        body = (
+            f"Hi {customer_first}, {business} here. Thanks for your message. "
+            "I can help with booking or pricing—what would you like?"
+        )
+        cta = "Reply BOOK or PRICE"
+
+    body = _hinglish_suffix(language, body)
+    return {"body": _shorten(body), "cta": cta, "rationale": f"Customer reply intent={intent}."}
 
 
 def _merchant_name(merchant: dict[str, Any] | None) -> str:
@@ -511,10 +662,14 @@ def handle_reply(
     category = _category_from_store(store, merchant, trigger)
     customer = store.get("customer", effective_customer_id) if effective_customer_id else None
     language = detect_reply_language(message)
-    intent = classify_intent(message, language)
+    from_role_norm = (from_role or "merchant").strip().lower()
+    if from_role_norm == "customer":
+        intent = classify_customer_intent(message, language)
+    else:
+        intent = classify_intent(message, language)
 
     incoming = {
-        "role": from_role or "merchant",
+        "role": from_role_norm or "merchant",
         "at": received_at or _utc_now(),
         "message": message,
         "intent": intent,
@@ -535,6 +690,14 @@ def handle_reply(
     else:
         print(f"[vera] warning: conversation {conversation_id} missing after append_history")
         history.append(incoming)
+
+    if from_role_norm == "customer":
+        reply = compose_customer_reply(intent, message, language, merchant, trigger, category, customer)
+        body = reply["body"]
+        cta = reply.get("cta") or "Reply"
+        rationale = reply.get("rationale") or f"Handled customer intent={intent}."
+        _append_assistant(store, conversation_id, body, cta, rationale)
+        return {"action": "send", "body": body, "cta": cta, "rationale": rationale}
 
     if intent == "auto_reply":
         if turn_number <= 2:

@@ -25,7 +25,14 @@ from utils import deep_get
 load_dotenv()
 
 STARTED_AT = monotonic()
-STORE = ContextStore(os.getenv("VERA_DB_PATH", "vera_context.db"))
+_db_path = os.getenv("VERA_DB_PATH", "vera_context.db")
+_reset_on_start = os.getenv("VERA_RESET_ON_START", "1").strip().lower() not in {"0", "false", "no"}
+if _reset_on_start and Path(_db_path).exists():
+    try:
+        Path(_db_path).unlink()
+    except OSError:
+        pass
+STORE = ContextStore(_db_path)
 
 
 class ContextRequest(BaseModel):
@@ -322,13 +329,23 @@ def _candidate_merchants_for_trigger(store: ContextStore, trigger: dict[str, Any
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, preload_expanded_dataset, STORE)
-    await loop.run_in_executor(None, preload_seed_dataset, STORE)
+    if os.getenv("VERA_PRELOAD_SEED", "0") == "1":
+        await loop.run_in_executor(None, preload_expanded_dataset, STORE)
+        await loop.run_in_executor(None, preload_seed_dataset, STORE)
     yield
     STORE.close()
 
 
 app = FastAPI(title="Vera Merchant AI Assistant", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def ensure_utf8_response(request, call_next):
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type and "charset" not in content_type:
+        response.headers["content-type"] = "application/json; charset=utf-8"
+    return response
 
 
 @app.exception_handler(Exception)
@@ -426,7 +443,10 @@ def _build_tick_action(
 
 def _tick_sync(request: TickRequest) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for available_id in request.available_triggers:
+    available = list(request.available_triggers or [])
+    if not available:
+        available = [context_id for context_id, _, _ in STORE.list_contexts("trigger")][:5]
+    for available_id in available:
         if len(candidates) >= 5:
             break
         trigger = STORE.get("trigger", available_id)

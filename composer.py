@@ -1428,17 +1428,22 @@ BEST EXAMPLE FOR THIS ROUTE:
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=8))
 def _chat_json(model: str, system_prompt: str, user_prompt: str, max_tokens: int = 700) -> dict[str, Any]:
     client = get_llm_client()
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=max_tokens,
-    )
-    content = response.choices[0].message.content or "{}"
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        logging.warning("[vera] LLM HTTP call failed: %s", str(e))
+        raise
+    content = (response.choices[0].message.content or "{}").strip()
+    if not content:
+        return {}
     return json.loads(content)
 
 

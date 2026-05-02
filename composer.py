@@ -1957,7 +1957,6 @@ def compose(
 
     validated = validate_and_fix(result, category, trigger, fallback_result=safe_fallback_result)
     validated = _enforce_personalization(validated, merchant, category)
-    validated = _enforce_offer_anchor(validated, merchant)
     validated = _enforce_numeric_fact(validated, key_facts)
     if not validated.get("suppression_key"):
         validated["suppression_key"] = canonical_key

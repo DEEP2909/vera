@@ -824,6 +824,17 @@ def _offer_for_route(
         return offer
     return "your current offer"
 
+def _active_offer_title(merchant: dict[str, Any] | None) -> str | None:
+    for offer in _as_list(_deep_get(merchant, "offers")):
+        if not isinstance(offer, dict):
+            continue
+        status = str(offer.get("status") or offer.get("state") or "").lower()
+        if status and status not in {"active", "running"}:
+            continue
+        title = offer.get("title") or offer.get("name") or offer.get("service")
+        if title:
+            return str(title)
+    return None
 
 def _extract_digest_item(category: dict[str, Any] | None, trigger: dict[str, Any] | None) -> str | None:
     wanted_id = _deep_get(

@@ -2292,3 +2292,4 @@ def _short_numeric_fact(key_facts: list[str]) -> str | None:
         if cleaned and len(cleaned) <= 70:
             return cleaned
     return None
+# Syntax fix 05/02/2026 17:57:25
